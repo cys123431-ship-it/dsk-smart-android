@@ -38,6 +38,8 @@ fun ChatContent(
     state: ChatUiState,
     onSuggestionClick: (String) -> Unit,
     onAttachmentClick: (Attachment) -> Unit,
+    onEdit: (messageId: Long, text: String) -> Unit,
+    onRegenerate: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -66,12 +68,24 @@ fun ChatContent(
                 items(state.messages, key = { it.id }) { message ->
                     MessageBubble(
                         message = message,
-                        onAttachmentClick = onAttachmentClick
+                        onAttachmentClick = onAttachmentClick,
+                        canEdit = message.isUser && message.id > 0 && !state.isSending,
+                        canRegenerate = message.id == state.regenerableId,
+                        onEdit = { text -> onEdit(message.id, text) },
+                        onRegenerate = onRegenerate,
+                        usageText = usageText(message)
                     )
                 }
             }
         }
     }
+}
+
+/** "입력 1,234 · 출력 567 토큰" under an answer when the server reported usage. */
+private fun usageText(message: ChatMessage): String? {
+    val prompt = message.promptTokens ?: return null
+    val completion = message.completionTokens ?: return null
+    return "입력 ${"%,d".format(prompt)} · 출력 ${"%,d".format(completion)} 토큰"
 }
 
 /** ChatGPT-style greeting plus tappable suggestion chips. */

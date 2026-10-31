@@ -8,8 +8,11 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 private val BrandBlue = Color(0xFF2563EB)
 private val BrandBlueDark = Color(0xFF1E40AF)
@@ -44,11 +47,15 @@ private val DarkColors = darkColorScheme(
 /**
  * App theme. Uses Material You dynamic colour on Android 12+ so the app matches the
  * phone/tablet wallpaper; falls back to the brand palette elsewhere.
+ *
+ * [fontScale] multiplies the system font size (Settings > 글자 크기), so every `sp` text in
+ * the app scales together without touching individual styles.
  */
 @Composable
 fun DskTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
+    fontScale: Float = 1f,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -60,9 +67,14 @@ fun DskTheme(
         else -> LightColors
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = DskTypography,
-        content = content
-    )
+    val density = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(density.density, density.fontScale * fontScale)
+    ) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = DskTypography,
+            content = content
+        )
+    }
 }

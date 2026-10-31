@@ -14,7 +14,14 @@ internal data class ChatRequest(
     val messages: List<ChatRequestMessage>,
     @SerialName("max_tokens") val maxTokens: Int? = null,
     val stream: Boolean = false,
-    val temperature: Double? = null
+    val temperature: Double? = null,
+    @SerialName("stream_options") val streamOptions: StreamOptions? = null
+)
+
+/** Asks the server to append a final chunk carrying token usage to a streamed answer. */
+@Serializable
+internal data class StreamOptions(
+    @SerialName("include_usage") val includeUsage: Boolean
 )
 
 /**
@@ -76,12 +83,18 @@ internal data class ChatUsage(
     @SerialName("prompt_tokens") val promptTokens: Int = 0,
     @SerialName("completion_tokens") val completionTokens: Int = 0,
     @SerialName("total_tokens") val totalTokens: Int = 0
-)
+) {
+    fun toTokenUsage() = TokenUsage(promptTokens = promptTokens, completionTokens = completionTokens)
+}
 
-/** Streaming chunk: `choices[0].delta.content` carries the incremental text. */
+/**
+ * Streaming chunk: `choices[0].delta.content` carries the incremental text; with
+ * `stream_options.include_usage` the final chunk carries [usage] instead.
+ */
 @Serializable
 internal data class ChatStreamChunk(
-    val choices: List<ChatStreamChoice> = emptyList()
+    val choices: List<ChatStreamChoice> = emptyList(),
+    val usage: ChatUsage? = null
 )
 
 @Serializable

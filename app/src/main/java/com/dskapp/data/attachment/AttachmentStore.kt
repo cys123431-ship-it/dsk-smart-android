@@ -28,14 +28,18 @@ object AttachmentStore {
 
     private const val CACHE_MAX_AGE_MS = 60 * 60 * 1000L
 
-    suspend fun importImage(context: Context, processedJpeg: ByteArray): Attachment =
+    suspend fun importImage(
+        context: Context,
+        processedJpeg: ByteArray,
+        displayName: String? = null
+    ): Attachment =
         withContext(Dispatchers.IO) {
             val file = newFile(context, "jpg")
             file.writeBytes(processedJpeg)
             Attachment(
                 kind = AttachmentKind.IMAGE,
                 localPath = file.absolutePath,
-                displayName = "사진 ${file.nameWithoutExtension.takeLast(4)}",
+                displayName = displayName ?: "사진 ${file.nameWithoutExtension.takeLast(4)}",
                 mimeType = "image/jpeg",
                 sizeBytes = file.length()
             )
@@ -64,6 +68,25 @@ object AttachmentStore {
                 )
             }
         }
+
+    /** Stores text extracted from a document (Word, PowerPoint, PDF) as a text attachment. */
+    suspend fun saveText(context: Context, displayName: String, text: String): Attachment =
+        withContext(Dispatchers.IO) {
+            val file = newFile(context, "txt")
+            file.writeText(text.take(MAX_TEXT_CHARS))
+            Attachment(
+                kind = AttachmentKind.TEXT_FILE,
+                localPath = file.absolutePath,
+                displayName = displayName,
+                mimeType = "text/plain",
+                sizeBytes = file.length()
+            )
+        }
+
+    /** A new, uniquely named file inside the attachments folder (used by backup restore). */
+    fun newAttachmentFile(context: Context, extension: String): File = newFile(context, extension)
+
+    fun displayName(context: Context, uri: Uri): String? = queryDisplayName(context, uri)
 
     suspend fun readText(attachment: Attachment): String = withContext(Dispatchers.IO) {
         runCatching { File(attachment.localPath).readText() }.getOrDefault("")

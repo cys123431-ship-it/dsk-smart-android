@@ -11,6 +11,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -35,6 +36,8 @@ import com.dskapp.ui.chat.SearchScreen
 import com.dskapp.ui.chat.SearchViewModel
 import com.dskapp.ui.settings.SettingsScreen
 import com.dskapp.ui.settings.SettingsViewModel
+import com.dskapp.ui.share.ShareInbox
+import com.dskapp.ui.share.SharedContent
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -70,8 +73,12 @@ fun DskAppNavHost() {
 
     var selectedId by rememberSaveable { mutableLongStateOf(0L) }
 
+    var shareTarget by remember { mutableStateOf<Pair<Long, SharedContent>?>(null) }
+
     // Follow the newest thread until the user picks one explicitly.
     LaunchedEffect(conversations) {
+        // A thread just created for a share may not be in a stale list yet; keep it selected.
+        if (shareTarget?.first == selectedId) return@LaunchedEffect
         if (selectedId == 0L || conversations.none { it.id == selectedId }) {
             conversations.firstOrNull()?.let { selectedId = it.id }
         }
@@ -84,6 +91,18 @@ fun DskAppNavHost() {
     val chatOwner = remember(selectedId) { ConversationViewModelOwner() }
     DisposableEffect(chatOwner) {
         onDispose { chatOwner.viewModelStore.clear() }
+    }
+
+    // "공유 → DSK 스마트" from another app opens in a fresh thread with the content attached.
+    val pendingShare by ShareInbox.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingShare) {
+        val share = pendingShare ?: return@LaunchedEffect
+        ShareInbox.consume(share)
+        navController.popBackStack(ChatRoute, inclusive = false)
+        listViewModel.newConversation { id ->
+            shareTarget = id to share
+            selectedId = id
+        }
     }
 
     NavHost(navController = navController, startDestination = ChatRoute) {
@@ -104,6 +123,14 @@ fun DskAppNavHost() {
                 )
             )
 
+            val target = shareTarget
+            if (target != null && target.first == selectedId) {
+                LaunchedEffect(target) {
+                    chatViewModel.acceptShare(target.second.text, target.second.uris)
+                    shareTarget = null
+                }
+            }
+
             ChatScreen(
                 viewModel = chatViewModel,
                 conversations = conversations,
@@ -121,7 +148,7 @@ fun DskAppNavHost() {
         composable<SettingsRoute> {
             SettingsScreen(
                 viewModel = viewModel(
-                    factory = SettingsViewModel.factory(settingsRepository, aiClient)
+                    factory = SettingsViewModel.factory(context, settingsRepository, chatRepository, aiClient)
                 ),
                 onBack = { navController.popBackStack() }
             )

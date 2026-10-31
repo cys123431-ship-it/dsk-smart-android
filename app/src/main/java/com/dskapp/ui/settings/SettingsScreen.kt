@@ -1,5 +1,7 @@
 package com.dskapp.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -18,6 +21,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -25,22 +29,31 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dskapp.data.settings.SettingsRepository
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
- * Endpoint settings: base URL, API key, model.
- *
- * Pre-filled for River AI (https://api.river.ai/v1) but editable, so the same build works
- * against any OpenAI-compatible server.
+ * Settings: endpoint, custom instructions, appearance, usage/cost, backup and the security
+ * note. All sections live on one scrollable page because they are short and rarely revisited.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,9 +61,40 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onBack: () -> Unit
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Results (save, backup, prices...) appear as a snackbar so they are visible from
+    // whichever section of this long page the user is in.
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.consumeMessage()
+        }
+    }
+
+    val createBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        // Null means the user backed out of the picker; do nothing.
+        if (uri != null) viewModel.exportBackup(uri)
+    }
+    val openBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.importBackup(uri)
+    }
+
+    // Timestamp computed at launch time so repeated taps produce distinct file names.
+    val exportName = remember {
+        {
+            "DSK_백업_" +
+                SimpleDateFormat("yyyyMMdd_HHmm", Locale.KOREA).format(Date()) + ".zip"
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("설정") },
@@ -146,16 +190,154 @@ fun SettingsScreen(
                 Text("저장")
             }
 
-            state.message?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (state.isSaved) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "맞춤 지시문", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "모든 대화에 항상 적용할 요청입니다. 예: 항상 존댓말로, 코드는 Kotlin으로.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = state.customInstructions,
+                onValueChange = viewModel::onCustomInstructionsChange,
+                minLines = 3,
+                maxLines = 8,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedButton(onClick = viewModel::saveCustomInstructions) {
+                Text("지시문 저장")
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "화면", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "테마",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.themeMode == SettingsRepository.ThemeMode.SYSTEM,
+                    onClick = { viewModel.setThemeMode(SettingsRepository.ThemeMode.SYSTEM) },
+                    label = { Text("시스템") }
                 )
+                FilterChip(
+                    selected = state.themeMode == SettingsRepository.ThemeMode.LIGHT,
+                    onClick = { viewModel.setThemeMode(SettingsRepository.ThemeMode.LIGHT) },
+                    label = { Text("밝게") }
+                )
+                FilterChip(
+                    selected = state.themeMode == SettingsRepository.ThemeMode.DARK,
+                    onClick = { viewModel.setThemeMode(SettingsRepository.ThemeMode.DARK) },
+                    label = { Text("어둡게") }
+                )
+            }
+            Text(
+                text = "글자 크기 ${(state.fontScale * 100).roundToInt()}%",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Slider(
+                value = state.fontScale,
+                onValueChange = viewModel::onFontScaleChange,
+                onValueChangeFinished = viewModel::saveFontScale,
+                valueRange = SettingsRepository.MIN_FONT_SCALE..SettingsRepository.MAX_FONT_SCALE
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "사용량", style = MaterialTheme.typography.titleMedium)
+            val usage = state.usage
+            if (usage == null) {
+                Text(
+                    text = "아직 사용 기록이 없습니다.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    text = "이번 달 (${usage.month})",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "입력 ${"%,d".format(usage.promptTokens)} 토큰 · " +
+                        "출력 ${"%,d".format(usage.completionTokens)} 토큰",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                val cost = state.estimatedCostUsd
+                if (cost != null) {
+                    Text(
+                        text = "예상 비용 약 $${"%.4f".format(cost)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    Text(
+                        text = "단가를 입력하면 예상 비용을 보여 줍니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = state.priceInput,
+                    onValueChange = viewModel::onPriceInputChange,
+                    label = { Text("입력 단가 (USD/100만)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = state.priceOutput,
+                    onValueChange = viewModel::onPriceOutputChange,
+                    label = { Text("출력 단가 (USD/100만)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            OutlinedButton(onClick = viewModel::savePrices) {
+                Text("단가 저장")
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "백업", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "대화와 첨부 파일을 .zip 하나로 저장합니다. 불러오면 기존 대화는 " +
+                    "그대로 두고 추가됩니다. API 키는 포함되지 않습니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = { createBackup.launch(exportName()) },
+                    enabled = !state.isBackupRunning
+                ) {
+                    Text("대화 백업")
+                }
+                OutlinedButton(
+                    onClick = {
+                        openBackup.launch(
+                            arrayOf(
+                                "application/zip",
+                                "application/x-zip-compressed",
+                                "application/octet-stream"
+                            )
+                        )
+                    },
+                    enabled = !state.isBackupRunning
+                ) {
+                    Text("백업 불러오기")
+                }
+                if (state.isBackupRunning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                }
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -221,4 +403,3 @@ private fun ModelPicker(
         }
     }
 }
-

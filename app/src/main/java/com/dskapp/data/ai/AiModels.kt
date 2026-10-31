@@ -27,9 +27,12 @@ enum class AiRole { USER, ASSISTANT }
 
 /** Every AI call returns one of these, so the UI never deals with raw exceptions. */
 sealed interface AiResult {
-    data class Success(val text: String) : AiResult
+    data class Success(val text: String, val usage: TokenUsage? = null) : AiResult
     data class Failure(val error: AiError) : AiResult
 }
+
+/** Token counts reported by the server for one call. */
+data class TokenUsage(val promptTokens: Int, val completionTokens: Int)
 
 /**
  * Configuration of the OpenAI-compatible endpoint. All three values are user-supplied in

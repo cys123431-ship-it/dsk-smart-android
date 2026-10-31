@@ -18,6 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Talks to any OpenAI-compatible /chat/completions endpoint.
@@ -29,33 +30,36 @@ import java.util.concurrent.TimeUnit
  *  - images    content part {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}
  *
  * [configProvider] is read on every call, so editing the base URL / key / model in Settings
- * takes effect immediately without rebuilding anything.
+ * takes effect immediately without rebuilding anything. [usageRecorder] sees the token
+ * counts of every call (answers, titles, summaries) for the monthly usage total.
  */
 class OpenAiCompatibleClient(
     private val client: OkHttpClient,
-    private val configProvider: () -> ProviderConfig
+    private val configProvider: () -> ProviderConfig,
+    private val usageRecorder: (TokenUsage) -> Unit = {}
 ) : AiClient {
+
+    /**
+     * Set once a server rejects `stream_options` (400). Usage is then simply unknown for
+     * streamed answers instead of every request failing.
+     */
+    @Volatile
+    private var streamUsageUnsupported = false
 
     override suspend fun complete(
         systemPrompt: String,
         messages: List<AiMessage>,
-        maxTokens: Int
+        maxTokens: Int,
+        model: String?
     ): AiResult = withContext(Dispatchers.IO) {
         val config = configProvider()
         if (!config.isComplete) return@withContext AiResult.Failure(AiError.NotConfigured)
 
-        val body = ChatJson.encodeToString(
-            ChatRequest.serializer(),
-            buildRequest(config, systemPrompt, messages, maxTokens, stream = false)
+        val request = chatRequest(
+            config,
+            buildRequest(config, model, systemPrompt, messages, maxTokens, stream = false, includeUsage = false),
+            accept = "application/json"
         )
-
-        val request = Request.Builder()
-            .url(config.endpoint("chat/completions"))
-            .addHeader("Authorization", "Bearer ${config.apiKey}")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Accept", "application/json")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
 
         try {
             client.newCall(request).execute().use { response ->
@@ -63,13 +67,17 @@ class OpenAiCompatibleClient(
                 if (!response.isSuccessful) {
                     return@withContext AiResult.Failure(parseError(response.code, payload))
                 }
-                val text = ChatJson.decodeFromString(ChatResponse.serializer(), payload).text()
+                val parsed = ChatJson.decodeFromString(ChatResponse.serializer(), payload)
+                val usage = parsed.usage?.toTokenUsage()?.also(usageRecorder)
+                val text = parsed.text()
                 if (text.isBlank()) {
                     AiResult.Failure(AiError.Unexpected("응답이 비어 있습니다."))
                 } else {
-                    AiResult.Success(text)
+                    AiResult.Success(text, usage)
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             AiResult.Failure(AiError.Network(e.message ?: "연결 실패"))
         } catch (e: Exception) {
@@ -104,8 +112,10 @@ class OpenAiCompatibleClient(
         systemPrompt: String,
         messages: List<AiMessage>,
         maxTokens: Int,
+        model: String?,
         onText: (String) -> Unit,
-        onError: (AiError) -> Unit
+        onError: (AiError) -> Unit,
+        onUsage: (TokenUsage) -> Unit
     ): Flow<Unit> = flow<Unit> {
         val config = configProvider()
         if (!config.isComplete) {
@@ -113,53 +123,68 @@ class OpenAiCompatibleClient(
             return@flow
         }
 
-        val body = ChatJson.encodeToString(
-            ChatRequest.serializer(),
-            buildRequest(config, systemPrompt, messages, maxTokens, stream = true)
+        fun newCall(includeUsage: Boolean): Call = client.newCall(
+            chatRequest(
+                config,
+                buildRequest(config, model, systemPrompt, messages, maxTokens, stream = true, includeUsage),
+                accept = "text/event-stream"
+            )
         )
 
-        val request = Request.Builder()
-            .url(config.endpoint("chat/completions"))
-            .addHeader("Authorization", "Bearer ${config.apiKey}")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Accept", "text/event-stream")
-            .post(body.toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        val reportUsage: (TokenUsage) -> Unit = { usage ->
+            usageRecorder(usage)
+            onUsage(usage)
+        }
 
         // The read loop below blocks on the socket, which coroutine cancellation cannot
         // interrupt. A sibling guard coroutine wakes up on cancellation and cancels the OkHttp
         // call, closing the socket, so "stop" really stops the download instead of silently
         // reading (and paying for) the rest of the answer.
-        val call = client.newCall(request)
+        val includeUsage = !streamUsageUnsupported
+        val current = AtomicReference(newCall(includeUsage))
         coroutineScope {
             val guard = launch {
                 try {
                     awaitCancellation()
                 } finally {
-                    call.cancel()
+                    current.get().cancel()
                 }
             }
             try {
-                readStream(call, onText, onError)
+                val retry = readStream(current.get(), includeUsage, onText, onError, reportUsage)
+                if (retry) {
+                    streamUsageUnsupported = true
+                    current.set(newCall(includeUsage = false))
+                    currentCoroutineContext().ensureActive()
+                    readStream(current.get(), includeUsage = false, onText, onError, reportUsage)
+                }
             } finally {
                 guard.cancel()
             }
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Reads one SSE response. Returns true only when the server rejected `stream_options`
+     * and the caller should retry without it; every other outcome is reported via callbacks.
+     */
     private suspend fun readStream(
         call: Call,
+        includeUsage: Boolean,
         onText: (String) -> Unit,
-        onError: (AiError) -> Unit
-    ) {
+        onError: (AiError) -> Unit,
+        onUsage: (TokenUsage) -> Unit
+    ): Boolean {
         try {
             call.execute().use { okResponse ->
                 if (!okResponse.isSuccessful) {
-                    onError(parseError(okResponse.code, okResponse.body?.string().orEmpty()))
-                    return
+                    val payload = okResponse.body?.string().orEmpty()
+                    if (includeUsage && okResponse.code == 400) return true
+                    onError(parseError(okResponse.code, payload))
+                    return false
                 }
 
-                val source = okResponse.body?.source() ?: return
+                val source = okResponse.body?.source() ?: return false
                 while (!source.exhausted()) {
                     // No further deltas once the user pressed stop.
                     currentCoroutineContext().ensureActive()
@@ -177,6 +202,8 @@ class OpenAiCompatibleClient(
                     chunk.choices.firstOrNull()?.delta?.content?.let { delta ->
                         if (delta.isNotEmpty()) onText(delta)
                     }
+                    // With include_usage the last chunk has empty choices and the totals.
+                    chunk.usage?.let { onUsage(it.toTokenUsage()) }
                 }
             }
         } catch (e: CancellationException) {
@@ -188,16 +215,28 @@ class OpenAiCompatibleClient(
         } catch (e: Exception) {
             onError(AiError.Unexpected(e.message ?: "알 수 없는 오류"))
         }
+        return false
     }
+
+    private fun chatRequest(config: ProviderConfig, body: ChatRequest, accept: String): Request =
+        Request.Builder()
+            .url(config.endpoint("chat/completions"))
+            .addHeader("Authorization", "Bearer ${config.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", accept)
+            .post(ChatJson.encodeToString(ChatRequest.serializer(), body).toRequestBody(JSON_MEDIA_TYPE))
+            .build()
 
     private fun buildRequest(
         config: ProviderConfig,
+        model: String?,
         systemPrompt: String,
         messages: List<AiMessage>,
         maxTokens: Int,
-        stream: Boolean
+        stream: Boolean,
+        includeUsage: Boolean
     ) = ChatRequest(
-        model = config.model,
+        model = model?.takeIf { it.isNotBlank() } ?: config.model,
         messages = buildList {
             if (systemPrompt.isNotBlank()) {
                 add(ChatRequestMessage("system", listOf(ChatContentPart.text(systemPrompt))))
@@ -218,7 +257,8 @@ class OpenAiCompatibleClient(
             }
         }.filter { it.content.isNotEmpty() },
         maxTokens = maxTokens,
-        stream = stream
+        stream = stream,
+        streamOptions = if (stream && includeUsage) StreamOptions(includeUsage = true) else null
     )
 
     /** Maps an HTTP failure to a typed [AiError], preferring the provider's own message. */
@@ -265,4 +305,3 @@ class OpenAiCompatibleClient(
             .build()
     }
 }
-

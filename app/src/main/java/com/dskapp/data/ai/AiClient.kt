@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.Flow
  * (River AI by default: https://api.river.ai/v1). Because base URL, key and model all come
  * from user settings, moving to a relay server later only needs a new implementation bound
  * in `com.dskapp.di.ServiceLocator`.
+ *
+ * [model] overrides the Settings model for one call (per-thread model choice).
  */
 interface AiClient {
 
@@ -16,19 +18,23 @@ interface AiClient {
     suspend fun complete(
         systemPrompt: String,
         messages: List<AiMessage>,
-        maxTokens: Int = DEFAULT_MAX_TOKENS
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
+        model: String? = null
     ): AiResult
 
     /**
      * Streaming call. Emits incremental text deltas through [onText] and reports problems
-     * through [onError] so callers can keep partial text on screen.
+     * through [onError] so callers can keep partial text on screen. [onUsage] fires once at
+     * the end when the server reports token counts.
      */
     fun stream(
         systemPrompt: String,
         messages: List<AiMessage>,
         maxTokens: Int = DEFAULT_MAX_TOKENS,
+        model: String? = null,
         onText: (String) -> Unit,
-        onError: (AiError) -> Unit
+        onError: (AiError) -> Unit,
+        onUsage: (TokenUsage) -> Unit = {}
     ): Flow<Unit>
 
     /** Lists model IDs from GET /models; empty when the server does not support it. */
@@ -38,4 +44,3 @@ interface AiClient {
         const val DEFAULT_MAX_TOKENS = 8192
     }
 }
-

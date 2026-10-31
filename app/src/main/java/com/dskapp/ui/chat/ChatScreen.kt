@@ -8,16 +8,24 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuOpen
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -143,7 +152,7 @@ fun ChatScreen(
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::attachTextFile)
+        uri?.let(viewModel::attachDocument)
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -164,7 +173,7 @@ fun ChatScreen(
             onAttachmentClick = { attachment -> openAttachment(context, attachment) },
             onPickImage = { imagePicker.launch("image/*") },
             onPickFile = {
-                filePicker.launch(arrayOf("text/*", "application/json", "application/xml"))
+                filePicker.launch(DOCUMENT_MIME_TYPES)
             },
             onPickCamera = {
                 val capture = createCameraCapture(context)
@@ -233,6 +242,16 @@ fun ChatScreen(
     }
 }
 
+/** What the "파일" picker offers: plain text plus Word, PowerPoint and PDF. */
+private val DOCUMENT_MIME_TYPES = arrayOf(
+    "text/*",
+    "application/json",
+    "application/xml",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+
 /** A camera target: the cache file and the content URI handed to the camera app. */
 private class CameraCapture(val file: File, val uri: Uri)
 
@@ -290,11 +309,14 @@ internal fun ChatScaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = state.title.ifBlank { "새 대화" },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        Text(
+                            text = state.title.ifBlank { "새 대화" },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        ThreadModelPicker(state = state, onSelect = viewModel::setThreadModel)
+                    }
                 },
                 navigationIcon = {
                     if (onOpenDrawer != null) {
@@ -348,6 +370,8 @@ internal fun ChatScaffold(
             state = state,
             onSuggestionClick = viewModel::onSuggestionClick,
             onAttachmentClick = onAttachmentClick,
+            onEdit = viewModel::editMessage,
+            onRegenerate = viewModel::regenerate,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -382,3 +406,56 @@ internal fun ChatScaffold(
     }
 }
 
+
+/**
+ * Small "model ▾" line under the title. The choice applies to this thread only; the first
+ * entry returns the thread to the default model from Settings.
+ */
+@Composable
+private fun ThreadModelPicker(state: ChatUiState, onSelect: (String?) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            modifier = Modifier.clickable { expanded = true },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = state.activeModel.substringAfterLast('/'),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = "이 대화의 모델 바꾸기",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("기본 모델 (${state.defaultModel.substringAfterLast('/')})") },
+                onClick = {
+                    onSelect(null)
+                    expanded = false
+                },
+                trailingIcon = {
+                    if (state.threadModel == null) Icon(Icons.Filled.Check, contentDescription = "선택됨")
+                }
+            )
+            state.knownModels.forEach { model ->
+                DropdownMenuItem(
+                    text = { Text(model, style = MaterialTheme.typography.bodySmall) },
+                    onClick = {
+                        onSelect(model)
+                        expanded = false
+                    },
+                    trailingIcon = {
+                        if (state.threadModel == model) Icon(Icons.Filled.Check, contentDescription = "선택됨")
+                    }
+                )
+            }
+        }
+    }
+}

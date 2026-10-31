@@ -49,7 +49,8 @@ object ServiceLocator {
                 val settings = settings(context)
                 OpenAiCompatibleClient(
                     client = OpenAiCompatibleClient.defaultHttpClient(),
-                    configProvider = { settings.providerConfig() }
+                    configProvider = { settings.providerConfig() },
+                    usageRecorder = settings::recordUsage
                 ).also { aiClient = it }
             }
         }

@@ -14,8 +14,10 @@ import com.dskapp.data.ai.AiMessage
 import com.dskapp.data.ai.AiResult
 import com.dskapp.data.ai.AiRole
 import com.dskapp.data.ai.Prompts
+import com.dskapp.data.ai.TokenUsage
 import com.dskapp.data.ai.userMessage
 import com.dskapp.data.attachment.AttachmentStore
+import com.dskapp.data.attachment.DocumentImporter
 import com.dskapp.data.chat.Attachment
 import com.dskapp.data.chat.AttachmentCodec
 import com.dskapp.data.chat.AttachmentKind
@@ -36,7 +38,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * One ChatGPT-style conversation: send text and/or images, receive a streamed answer.
+ * One ChatGPT-style conversation: send text and/or images, receive a streamed answer,
+ * regenerate the last answer or edit an earlier message.
  *
  * Streaming is written straight into the in-memory message list (not the DB) on every
  * delta for a smooth typing effect, then persisted once when the stream finishes. The
@@ -65,7 +68,7 @@ class ChatViewModel(
 
     init {
         observeMessages()
-        observeTitle()
+        observeConversation()
         observeSettings()
     }
 
@@ -81,11 +84,13 @@ class ChatViewModel(
         }
     }
 
-    /** Shows the stored title when an existing thread is reopened. */
-    private fun observeTitle() {
+    /** Title and per-thread model come from the conversation row. */
+    private fun observeConversation() {
         viewModelScope.launch {
             chatRepository.observeConversation(conversationId).collectLatest { conversation ->
-                if (conversation != null) _uiState.update { it.copy(title = conversation.title) }
+                if (conversation != null) {
+                    _uiState.update { it.copy(title = conversation.title, threadModel = conversation.model) }
+                }
             }
         }
     }
@@ -93,7 +98,13 @@ class ChatViewModel(
     private fun observeSettings() {
         viewModelScope.launch {
             settingsRepository.state.collectLatest { settings ->
-                _uiState.update { it.copy(needsSetup = !settings.isConfigured) }
+                _uiState.update {
+                    it.copy(
+                        needsSetup = !settings.isConfigured,
+                        defaultModel = settings.model,
+                        knownModels = settings.knownModels
+                    )
+                }
             }
         }
     }
@@ -103,7 +114,9 @@ class ChatViewModel(
         isUser = role == ROLE_USER,
         content = content,
         attachments = AttachmentCodec.decode(attachmentsJson),
-        isError = isError
+        isError = isError,
+        promptTokens = promptTokens,
+        completionTokens = completionTokens
     )
 
     // ---------------------------------------------------------------- input state
@@ -118,6 +131,12 @@ class ChatViewModel(
 
     fun consumeBanner() {
         _uiState.update { it.copy(banner = null) }
+    }
+
+    /** Picks the model for this thread only; null or the default model clears the override. */
+    fun setThreadModel(model: String?) {
+        val override = model?.takeIf { it.isNotBlank() && it != _uiState.value.defaultModel }
+        viewModelScope.launch { chatRepository.setModel(conversationId, override) }
     }
 
     // ---------------------------------------------------------------- attachments
@@ -147,26 +166,41 @@ class ChatViewModel(
         }
     }
 
-    fun attachTextFile(uri: Uri) {
+    /** Text, Word, PowerPoint or PDF; PDFs without a text layer become page images. */
+    fun attachDocument(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(isImporting = true) }
-            val result = AttachmentStore.importTextFile(appContext, uri)
+            val result = DocumentImporter.import(appContext, uri)
             _uiState.update { state ->
                 result.fold(
-                    onSuccess = { attachment ->
+                    onSuccess = { attachments ->
                         state.copy(
                             isImporting = false,
-                            pendingAttachments = state.pendingAttachments + attachment
+                            pendingAttachments = state.pendingAttachments + attachments
                         )
                     },
-                    onFailure = {
+                    onFailure = { error ->
                         state.copy(
                             isImporting = false,
-                            banner = "파일을 읽지 못했습니다. 텍스트 파일인지 확인해 주세요."
+                            banner = error.message ?: "파일을 읽지 못했습니다."
                         )
                     }
                 )
             }
+        }
+    }
+
+    /** Content shared from another app: text goes to the input, files become attachments. */
+    fun acceptShare(text: String?, uris: List<Uri>) {
+        if (!text.isNullOrBlank()) {
+            _uiState.update { state ->
+                val joined = if (state.input.isBlank()) text.trim() else state.input + "\n" + text.trim()
+                state.copy(input = joined)
+            }
+        }
+        uris.forEach { uri ->
+            val type = runCatching { appContext.contentResolver.getType(uri) }.getOrNull().orEmpty()
+            if (type.startsWith("image/")) attachImage(uri) else attachDocument(uri)
         }
     }
 
@@ -192,90 +226,131 @@ class ChatViewModel(
         _uiState.update { it.copy(input = "", pendingAttachments = emptyList(), isSending = true) }
 
         viewModelScope.launch {
-            // 1. Persist the user's turn. Fails only if the thread was just deleted.
-            val saved = runCatching {
-                chatRepository.appendMessage(
-                    conversationId = conversationId,
-                    role = ROLE_USER,
-                    content = text,
-                    attachmentsJson = AttachmentCodec.encode(attachments)
-                )
-            }
-            if (saved.isFailure) {
+            if (!persistUserTurn(text, attachments)) {
                 _uiState.update {
-                    it.copy(
-                        input = text,
-                        pendingAttachments = attachments,
-                        isSending = false,
-                        banner = "이 대화가 삭제되어 보낼 수 없습니다."
-                    )
+                    it.copy(input = text, pendingAttachments = attachments, banner = "이 대화가 삭제되어 보낼 수 없습니다.")
                 }
                 return@launch
             }
-
-            // 2. Build the API history from the DB (authoritative ordering).
-            val history = buildHistory()
-            val placeholderId = -System.currentTimeMillis()
-            _uiState.update {
-                it.copy(
-                    messages = it.messages + ChatMessage(
-                        id = placeholderId,
-                        isUser = false,
-                        content = "",
-                        isThinking = true
-                    )
-                )
-            }
-
-            val system = if (attachments.any { a -> a.kind == AttachmentKind.IMAGE }) {
-                Prompts.SYSTEM + "\n\n" + Prompts.PHOTO_HINT
-            } else {
-                Prompts.SYSTEM
-            }
-
-            val builder = StringBuilder()
-            var failed = false
-
-            // 3. Stream the answer into the placeholder for a typing effect.
-            val job = viewModelScope.launch {
-                aiClient.stream(
-                    systemPrompt = system,
-                    messages = history,
-                    onText = { delta ->
-                        val snapshot = synchronized(builder) { builder.append(delta).toString() }
-                        _uiState.update { current ->
-                            current.copy(
-                                messages = current.messages.map { message ->
-                                    if (message.id == placeholderId) {
-                                        message.copy(content = snapshot, isThinking = false)
-                                    } else {
-                                        message
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    onError = { error ->
-                        failed = true
-                        _uiState.update { it.copy(banner = error.userMessage) }
-                    }
-                ).collect { }
-            }
-            streamJob = job
-
-            // 4. Persist whatever arrived, even when the user pressed stop or left the screen
-            //    (viewModelScope cancelled): NonCancellable lets the final write finish.
-            try {
-                job.join()
-            } finally {
-                withContext(NonCancellable) {
-                    val finalText = synchronized(builder) { builder.toString() }.trim()
-                    finishAnswer(placeholderId, finalText, failed, stopped = job.isCancelled)
-                    if (streamJob === job) streamJob = null
-                }
-            }
-
+            streamAnswer(photoAttached = attachments.any { it.kind == AttachmentKind.IMAGE })
             if (isFirstMessage) generateTitle(text)
+        }
+    }
+
+    /** Throws away the last answer and asks again with the same history. */
+    fun regenerate() {
+        val state = _uiState.value
+        val targetId = state.regenerableId ?: return
+        if (state.needsSetup) return
+        _uiState.update { it.copy(isSending = true) }
+
+        viewModelScope.launch {
+            chatRepository.truncateFrom(conversationId, targetId)
+            val lastUser = chatRepository.messages(conversationId).lastOrNull { it.role == ROLE_USER }
+            val photo = lastUser?.let { m ->
+                AttachmentCodec.decode(m.attachmentsJson).any { it.kind == AttachmentKind.IMAGE }
+            } ?: false
+            streamAnswer(photoAttached = photo)
+        }
+    }
+
+    /**
+     * Replaces a user message with [newText] and drops everything after it, then answers
+     * again. The message keeps its attachments.
+     */
+    fun editMessage(messageId: Long, newText: String) {
+        val state = _uiState.value
+        if (state.isSending || state.needsSetup) return
+        val original = state.messages.firstOrNull { it.id == messageId && it.isUser } ?: return
+        val text = newText.trim()
+        if (text.isEmpty() && original.attachments.isEmpty()) return
+        _uiState.update { it.copy(isSending = true) }
+
+        viewModelScope.launch {
+            chatRepository.truncateFrom(
+                conversationId,
+                messageId,
+                keepPaths = original.attachments.map { it.localPath }.toSet()
+            )
+            if (!persistUserTurn(text, original.attachments)) return@launch
+            streamAnswer(photoAttached = original.attachments.any { it.kind == AttachmentKind.IMAGE })
+        }
+    }
+
+    /** Stores the user's turn; false (and sending reset) when the thread no longer exists. */
+    private suspend fun persistUserTurn(text: String, attachments: List<Attachment>): Boolean {
+        val saved = runCatching {
+            chatRepository.appendMessage(
+                conversationId = conversationId,
+                role = ROLE_USER,
+                content = text,
+                attachmentsJson = AttachmentCodec.encode(attachments)
+            )
+        }
+        if (saved.isFailure) _uiState.update { it.copy(isSending = false) }
+        return saved.isSuccess
+    }
+
+    /** Streams an answer to the stored history into a placeholder, then persists it. */
+    private suspend fun streamAnswer(photoAttached: Boolean) {
+        val placeholderId = -System.currentTimeMillis()
+        _uiState.update {
+            it.copy(
+                messages = it.messages + ChatMessage(
+                    id = placeholderId,
+                    isUser = false,
+                    content = "",
+                    isThinking = true
+                )
+            )
+        }
+
+        val model = _uiState.value.threadModel
+        val context = buildContext(model)
+        val system = buildSystemPrompt(context.summary, photoAttached)
+
+        val builder = StringBuilder()
+        var failed = false
+        var usage: TokenUsage? = null
+
+        val job = viewModelScope.launch {
+            aiClient.stream(
+                systemPrompt = system,
+                messages = context.messages,
+                model = model,
+                onText = { delta ->
+                    val snapshot = synchronized(builder) { builder.append(delta).toString() }
+                    _uiState.update { current ->
+                        current.copy(
+                            messages = current.messages.map { message ->
+                                if (message.id == placeholderId) {
+                                    message.copy(content = snapshot, isThinking = false)
+                                } else {
+                                    message
+                                }
+                            }
+                        )
+                    }
+                },
+                onError = { error ->
+                    failed = true
+                    _uiState.update { it.copy(banner = error.userMessage) }
+                },
+                onUsage = { usage = it }
+            ).collect { }
+        }
+        streamJob = job
+
+        // Persist whatever arrived, even when the user pressed stop or left the screen
+        // (viewModelScope cancelled): NonCancellable lets the final write finish.
+        try {
+            job.join()
+        } finally {
+            withContext(NonCancellable) {
+                val finalText = synchronized(builder) { builder.toString() }.trim()
+                finishAnswer(placeholderId, finalText, failed, stopped = job.isCancelled, usage = usage)
+                if (streamJob === job) streamJob = null
+            }
         }
     }
 
@@ -287,7 +362,8 @@ class ChatViewModel(
         placeholderId: Long,
         finalText: String,
         failed: Boolean,
-        stopped: Boolean
+        stopped: Boolean,
+        usage: TokenUsage?
     ) {
         val hasAnswer = finalText.isNotEmpty()
         val content = when {
@@ -304,7 +380,9 @@ class ChatViewModel(
                     conversationId = conversationId,
                     role = ROLE_ASSISTANT,
                     content = it,
-                    isError = !hasAnswer
+                    isError = !hasAnswer,
+                    promptTokens = usage?.promptTokens,
+                    completionTokens = usage?.completionTokens
                 )
             }.getOrNull()
         }
@@ -321,25 +399,87 @@ class ChatViewModel(
                     id = persistedId,
                     isUser = false,
                     content = content,
-                    isError = !hasAnswer
+                    isError = !hasAnswer,
+                    promptTokens = usage?.promptTokens,
+                    completionTokens = usage?.completionTokens
                 )
             }
             current.copy(isSending = false, messages = messages)
         }
     }
 
+    private fun buildSystemPrompt(summary: String?, photoAttached: Boolean): String = buildString {
+        append(Prompts.SYSTEM)
+        val custom = settingsRepository.state.value.customInstructions
+        if (custom.isNotBlank()) {
+            append("\n\n").append(Prompts.CUSTOM_INSTRUCTIONS_HEADER).append('\n').append(custom)
+        }
+        if (!summary.isNullOrBlank()) {
+            append("\n\n").append(Prompts.SUMMARY_HEADER).append('\n').append(summary)
+        }
+        if (photoAttached) append("\n\n").append(Prompts.PHOTO_HINT)
+    }
+
+    private class HistoryContext(val summary: String?, val messages: List<AiMessage>)
+
     /**
-     * Rebuilds the conversation in API form, resolving attachments to base64 on demand.
+     * Rebuilds the conversation in API form.
      *
-     * Error bubbles are app text, not model output, so they are never sent. Photos and file
-     * contents are only resent for the last [ATTACHMENT_WINDOW_MESSAGES] messages: resending
-     * every old photo as base64 on each turn costs megabytes of upload and many tokens. Older
-     * attachments are replaced by a one-line note so the model still knows they existed.
+     * Error bubbles are app text, not model output, so they are never sent. When more than
+     * [MAX_HISTORY_MESSAGES] messages are not yet covered by the thread's summary, the older
+     * ones are folded into the summary (one extra short call) and only the latest
+     * [KEEP_AFTER_SUMMARY] are sent in full. If summarising fails, the oldest messages are
+     * simply dropped as before.
      */
-    private suspend fun buildHistory(): List<AiMessage> {
-        val recent = chatRepository.messages(conversationId)
-            .filterNot { it.isError }
-            .takeLast(MAX_HISTORY_MESSAGES)
+    private suspend fun buildContext(model: String?): HistoryContext {
+        val all = chatRepository.messages(conversationId).filterNot { it.isError }
+        val conversation = chatRepository.conversation(conversationId)
+        var summary = conversation?.summary
+        val upTo = conversation?.summaryUpToId ?: 0L
+        var pending = all.filter { it.id > upTo }
+
+        if (pending.size > MAX_HISTORY_MESSAGES) {
+            val toFold = pending.dropLast(KEEP_AFTER_SUMMARY)
+            val folded = summarize(summary, toFold, model)
+            if (folded != null) {
+                runCatching { chatRepository.setSummary(conversationId, folded, toFold.last().id) }
+                summary = folded
+                pending = pending.takeLast(KEEP_AFTER_SUMMARY)
+            } else {
+                pending = pending.takeLast(MAX_HISTORY_MESSAGES)
+            }
+        }
+
+        return HistoryContext(summary, toAiMessages(pending))
+    }
+
+    private suspend fun summarize(previous: String?, messages: List<MessageEntity>, model: String?): String? {
+        val transcript = buildString {
+            if (!previous.isNullOrBlank()) append("[이전 요약]\n").append(previous).append("\n\n")
+            append("[대화]\n")
+            messages.forEach { m ->
+                append(if (m.role == ROLE_USER) "사용자: " else "AI: ")
+                append(m.content.take(SUMMARY_CHARS_PER_MESSAGE))
+                val names = AttachmentCodec.decode(m.attachmentsJson).map { it.displayName }
+                if (names.isNotEmpty()) append(" (첨부: ").append(names.joinToString()).append(')')
+                append('\n')
+            }
+        }
+        val result = aiClient.complete(
+            systemPrompt = Prompts.SUMMARY_PROMPT,
+            messages = listOf(AiMessage(AiRole.USER, transcript)),
+            maxTokens = SUMMARY_MAX_TOKENS,
+            model = model
+        )
+        return (result as? AiResult.Success)?.text?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Photos and file contents are only resent for the last [ATTACHMENT_WINDOW_MESSAGES]
+     * messages: resending every old photo as base64 on each turn costs megabytes of upload
+     * and many tokens. Older attachments are replaced by a one-line note.
+     */
+    private suspend fun toAiMessages(recent: List<MessageEntity>): List<AiMessage> {
         val attachmentWindowStart = recent.size - ATTACHMENT_WINDOW_MESSAGES
 
         return recent.mapIndexedNotNull { index, entity ->
@@ -397,7 +537,8 @@ class ChatViewModel(
             val result = aiClient.complete(
                 systemPrompt = Prompts.TITLE_PROMPT,
                 messages = listOf(AiMessage(AiRole.USER, firstMessage)),
-                maxTokens = 64
+                maxTokens = 64,
+                model = _uiState.value.threadModel
             )
             val generated = (result as? AiResult.Success)?.text
             val title = generated
@@ -406,14 +547,13 @@ class ChatViewModel(
                 ?.take(30)
                 ?: firstMessage.lineSequence().first().take(24)
 
-            chatRepository.renameConversation(conversationId, title)
-            _uiState.update { it.copy(title = title) }
+            runCatching { chatRepository.renameConversation(conversationId, title) }
         }
     }
 
     /**
-     * Stops an in-flight answer. Cancelling closes the HTTP stream; [send] then stores the
-     * text that already arrived and clears [ChatUiState.isSending].
+     * Stops an in-flight answer. Cancelling closes the HTTP stream; the sender then stores
+     * the text that already arrived and clears [ChatUiState.isSending].
      */
     fun stopGenerating() {
         streamJob?.cancel()
@@ -429,11 +569,17 @@ class ChatViewModel(
         const val ROLE_USER = "user"
         const val ROLE_ASSISTANT = "assistant"
 
-        /** How many past turns are resent; keeps long threads inside the context window. */
+        /** Unsummarised messages allowed before old ones are folded into the summary. */
         private const val MAX_HISTORY_MESSAGES = 30
+
+        /** Messages kept verbatim after a fold, so the latest turns stay exact. */
+        private const val KEEP_AFTER_SUMMARY = 10
 
         /** Only the latest messages resend their photos/files (about the last two turns). */
         private const val ATTACHMENT_WINDOW_MESSAGES = 4
+
+        private const val SUMMARY_MAX_TOKENS = 1024
+        private const val SUMMARY_CHARS_PER_MESSAGE = 4000
 
         fun factory(
             context: Context,

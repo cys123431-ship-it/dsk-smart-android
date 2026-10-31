@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">DSK 스마트</string>
     <string name="app_name_short">DSK</string>
+    <string name="share_label">DSK 스마트에 묻기</string>
 </resources>

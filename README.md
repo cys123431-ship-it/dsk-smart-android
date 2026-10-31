@@ -65,12 +65,40 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 - 첫 메시지로 대화 제목 자동 생성
 - 대화 목록: 고정(pin), 삭제, 재선택
 - 마크다운 렌더링: 제목/목록/인용/표/**코드블록 + 복사 버튼**
+- **답변 다시 생성**: 마지막 답변 아래 ↻ 버튼 (오류 답변도 다시 시도 가능)
+- **내 메시지 수정**: 메시지 아래 연필 버튼 → 고친 내용으로 그 뒤 대화를 지우고 새로 답변
+- 메시지·답변 **복사** 버튼
+- **대화별 모델**: 상단 제목 아래 모델 이름을 눌러 이 대화만 다른 모델로 (기본값은 설정의 모델)
+- **맞춤 지시문**: 설정에 적은 요청("항상 존댓말로" 등)을 모든 대화에 적용
+- **긴 대화 자동 요약**: 요약되지 않은 메시지가 30개를 넘으면 오래된 부분을 한 번 요약해 두고,
+  이후에는 요약 + 최근 10개만 보냄 → 맥락은 유지하면서 토큰 절약 (요약 실패 시 최근 30개만 전송)
+
+### 토큰 사용량
+- 답변마다 **입력·출력 토큰 수** 표시 (서버가 사용량을 알려 줄 때. `stream_options.include_usage` 요청,
+  서버가 이 옵션을 거부하면 자동으로 빼고 다시 요청)
+- 설정 → 사용량: **이번 달 누적 토큰** (제목 생성·요약 호출 포함), 단가를 입력하면 **예상 비용(USD)**
+
+### 다른 앱에서 공유받기
+- 브라우저·갤러리·파일 앱 등에서 **공유 → "DSK 스마트에 묻기"**
+- 글(제목+링크 포함)은 입력창에, 사진·문서는 첨부로 들어간 **새 대화**가 열림 (사진은 한 번에 최대 6장)
+
+### 대화 백업 · 복원
+- 설정 → 백업: 대화 전체와 첨부 파일을 **.zip 하나**로 저장 (원하는 폴더·드라이브에 저장)
+- 불러오기는 기존 대화를 지우지 않고 **추가**. API 키는 백업에 포함되지 않음
+
+### 화면
+- 테마: 시스템 / 밝게 / 어둡게 (상태 표시줄 아이콘 색도 함께 전환)
+- 글자 크기: 85% ~ 140% (앱 전체 글자에 적용)
 
 ### 사진 · 첨부
 - 카메라 촬영 또는 갤러리 선택
 - **EXIF 회전 보정** (옆으로 누운 사진의 글자를 제대로 읽도록)
 - 긴 변 1568px 로 축소 후 JPEG 82 품질 → 토큰·전송량 절감
 - 텍스트 파일 첨부 (최대 12만 자). 필요한 만큼만 읽고, UTF-8 / UTF-16 / CP949(EUC-KR) 자동 판별
+- **Word(.docx)·PowerPoint(.pptx)** 첨부: 기기에서 글자만 뽑아 전송 (최대 25MB, 표는 탭으로 구분)
+- **PDF** 첨부: Android 15+ 는 PDF 글자를 직접 읽어 전송. 스캔 PDF 이거나 Android 14 이하면
+  앞 4쪽을 이미지로 바꿔 전송 (이미지를 읽을 수 있는 모델 필요)
+- 옛 형식(.doc/.ppt/.hwp)은 지원하지 않음
 - 첨부 파일은 앱 전용 저장소에 복사되어 재시작 후에도 유지, **대화를 지우면 함께 삭제**
 - 카메라 원본은 축소본을 만든 직후 삭제, 내보낸 파일 캐시는 앱 시작 시 1시간 지난 것 정리
 
@@ -120,8 +148,9 @@ app/src/main/java/com/dskapp/
 │  │  ├─ ChatWireModels.kt       요청/응답 직렬화 모델
 │  │  ├─ AiModels.kt             AiMessage, AiError, ProviderConfig
 │  │  └─ Prompts.kt              시스템 프롬프트 / 추천 질문
-│  ├─ chat/                      Room: 대화 + 메시지, 첨부 JSON
-│  ├─ attachment/                AttachmentStore 파일 저장·정리, TextDecoding 인코딩 판별
+│  ├─ chat/                      Room v2: 대화(모델·요약) + 메시지(토큰), 첨부 JSON, v1→v2 마이그레이션
+│  ├─ attachment/                AttachmentStore, TextDecoding, DocumentImporter(docx/pptx/pdf)
+│  ├─ backup/                    BackupService (.zip 백업·복원), BackupCodec
 │  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
 │  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
 │  └─ settings/                  SettingsRepository, KeystoreCipher (API 키 암호화)
@@ -129,8 +158,9 @@ app/src/main/java/com/dskapp/
    ├─ DskAppNavHost.kt           Chat ↔ Settings ↔ Search, 열린 대화의 ViewModel 만 유지
    ├─ chat/                      ChatScreen(폰 드로어 / 넓은 화면 2단 공용), ChatViewModel, Drawer, ExportSheet
    ├─ components/                MessageBubble, MarkdownText, ChatComposer
-   ├─ settings/                  SettingsScreen/ViewModel
-   └─ theme/                     Material 3 (동적 색상 지원)
+   ├─ settings/                  SettingsScreen/ViewModel (연결·지시문·화면·사용량·백업)
+   ├─ share/ShareInbox.kt        다른 앱의 공유 인텐트 → 새 대화로 전달
+   └─ theme/                     Material 3 (동적 색상, 수동 다크 모드, 글자 크기)
 ```
 
 ### 나중에 중계 서버로 전환하려면
@@ -189,8 +219,7 @@ keyPassword=...
 
 ## 6. 1차 범위에 포함되지 않은 것
 
-- **기존 파일 편집** (업로드한 docx/xlsx/pdf의 레이아웃을 유지하며 수정): 내용을 새 파일로 생성하는 방식만 지원
-- 다크 테마 수동 전환 (시스템 설정을 따름)
+- **기존 파일 편집** (업로드한 docx/xlsx/pdf의 레이아웃을 유지하며 수정): 내용을 읽어 새 파일로 생성하는 방식만 지원
 
 ## 7. 설계 메모
 

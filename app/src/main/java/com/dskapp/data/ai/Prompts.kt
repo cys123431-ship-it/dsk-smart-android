@@ -58,5 +58,26 @@ object Prompts {
     /** Auto title generation: keep it short like ChatGPT's history labels. */
     const val TITLE_PROMPT =
         "다음 사용자 메시지를 18자 이내의 한국어 제목으로만 요약하세요. 따옴표나 마침표 없이 제목만 출력하세요."
+
+    /** Header for the user's standing instructions from Settings. */
+    const val CUSTOM_INSTRUCTIONS_HEADER =
+        "The user's standing instructions (follow them unless the current request says otherwise):"
+
+    /** Header for the running summary that replaces old turns of a long thread. */
+    const val SUMMARY_HEADER =
+        "Summary of the earlier part of this conversation (older messages are not repeated):"
+
+    /**
+     * Compresses old turns so long threads keep their context without resending everything.
+     * Kept factual and dense: names, numbers, decisions and open questions survive.
+     */
+    val SUMMARY_PROMPT = """
+        You compress chat history. Write a dense Korean summary of the conversation below
+        so an assistant can continue it without the original messages.
+        Keep: the user's goals, facts and numbers, names, decisions made, code or document
+        details that later turns depend on, and unanswered questions.
+        Drop: greetings, filler, repeated content.
+        If a previous summary is given, merge it in. Output only the summary, at most 1500 characters.
+    """.trimIndent()
 }
 

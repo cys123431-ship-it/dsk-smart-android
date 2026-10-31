@@ -3,6 +3,7 @@ package com.dskapp.data.chat
 import android.content.Context
 import com.dskapp.data.attachment.AttachmentStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /** Repository over [ChatDao]; keeps ViewModels free of SQL details. */
 class ChatRepository(private val dao: ChatDao) {
@@ -13,6 +14,8 @@ class ChatRepository(private val dao: ChatDao) {
 
     fun observeMessages(conversationId: Long): Flow<List<MessageEntity>> =
         dao.observeMessages(conversationId)
+
+    suspend fun conversation(id: Long): ConversationEntity? = dao.getConversation(id)
 
     suspend fun messages(conversationId: Long): List<MessageEntity> =
         dao.getMessages(conversationId)
@@ -30,7 +33,9 @@ class ChatRepository(private val dao: ChatDao) {
         role: String,
         content: String,
         attachmentsJson: String = "[]",
-        isError: Boolean = false
+        isError: Boolean = false,
+        promptTokens: Int? = null,
+        completionTokens: Int? = null
     ): Long {
         val now = System.currentTimeMillis()
         val id = dao.insertMessage(
@@ -40,11 +45,34 @@ class ChatRepository(private val dao: ChatDao) {
                 content = content,
                 createdAt = now,
                 attachmentsJson = attachmentsJson,
-                isError = isError
+                isError = isError,
+                promptTokens = promptTokens,
+                completionTokens = completionTokens
             )
         )
         dao.touchConversation(conversationId, now)
         return id
+    }
+
+    /**
+     * Removes [fromMessageId] and every later message of the thread (edit / regenerate).
+     * Attachment files go too, except paths in [keepPaths] (an edited message re-sends its
+     * own photos). A summary that covered removed messages is dropped so it is rebuilt.
+     */
+    suspend fun truncateFrom(
+        conversationId: Long,
+        fromMessageId: Long,
+        keepPaths: Set<String> = emptySet()
+    ) {
+        val removed = dao.getMessagesFrom(conversationId, fromMessageId)
+        dao.deleteMessagesFrom(conversationId, fromMessageId)
+        AttachmentStore.deleteAll(
+            removed.flatMap { AttachmentCodec.decode(it.attachmentsJson) }
+                .filterNot { it.localPath in keepPaths }
+        )
+        val conversation = dao.getConversation(conversationId)
+        val upTo = conversation?.summaryUpToId
+        if (upTo != null && upTo >= fromMessageId) dao.setSummary(conversationId, null, null)
     }
 
     suspend fun renameConversation(id: Long, title: String) {
@@ -52,6 +80,10 @@ class ChatRepository(private val dao: ChatDao) {
     }
 
     suspend fun setPinned(id: Long, pinned: Boolean) = dao.setPinned(id, pinned)
+
+    suspend fun setModel(id: Long, model: String?) = dao.setModel(id, model?.takeIf { it.isNotBlank() })
+
+    suspend fun setSummary(id: Long, summary: String, upToId: Long) = dao.setSummary(id, summary, upToId)
 
     /**
      * Deletes the thread (messages cascade) and the attachment files its messages point to,
@@ -75,7 +107,7 @@ class ChatRepository(private val dao: ChatDao) {
     fun search(query: String): Flow<List<ConversationEntity>> {
         val trimmed = query.trim()
         return if (trimmed.isEmpty()) {
-            kotlinx.coroutines.flow.flowOf(emptyList())
+            flowOf(emptyList())
         } else {
             dao.searchConversations(escapeLikePattern(trimmed))
         }
@@ -84,6 +116,19 @@ class ChatRepository(private val dao: ChatDao) {
     /** First matching message body, used to show why a thread matched. */
     suspend fun snippet(conversationId: Long, query: String): String? =
         dao.findSnippet(conversationId, escapeLikePattern(query.trim()))
+
+    // ---------------------------------------------------------------- backup support
+
+    suspend fun allConversations(): List<ConversationEntity> = dao.getAllConversations()
+
+    /** Inserts a restored thread with fresh ids; returns the new conversation id. */
+    suspend fun insertRestored(conversation: ConversationEntity, messages: List<MessageEntity>): Long {
+        val newId = dao.insertConversation(
+            conversation.copy(id = 0L, summary = null, summaryUpToId = null)
+        )
+        dao.insertMessages(messages.map { it.copy(id = 0L, conversationId = newId) })
+        return newId
+    }
 
     companion object Factory {
         const val NEW_CONVERSATION_TITLE = "새 대화"
@@ -94,7 +139,7 @@ class ChatRepository(private val dao: ChatDao) {
                 context.applicationContext,
                 ChatDatabase::class.java,
                 ChatDatabase.NAME
-            ).build()
+            ).addMigrations(ChatDatabase.MIGRATION_1_2).build()
             return ChatRepository(db.chatDao())
         }
     }
