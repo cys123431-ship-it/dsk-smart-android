@@ -44,8 +44,11 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 
 ## 2. 보안
 
-- API 키는 **EncryptedSharedPreferences** (Android Keystore, AES-256-GCM)에만 저장
-- `data_extraction_rules.xml` 에서 백업·기기이전 **제외** → 평문 XML이나 클라우드 백업으로 유출되지 않음
+- API 키는 **Android Keystore 의 AES-256-GCM 키로 암호화**해 저장 (`KeystoreCipher`). 키 자체는 Keystore 밖으로 나오지 않음
+- 서버 주소·모델은 비밀이 아니므로 일반 SharedPreferences (`dsk_settings`) 에 저장
+- 지원 중단된 EncryptedSharedPreferences(Tink 포함)를 쓰지 않아 앱이 가볍고 시작이 빠름
+- 1.0.0 에서 올리면 이전 저장 방식이 정리되므로 **API 키를 한 번 다시 입력**해야 함
+- `data_extraction_rules.xml` 에서 백업·기기이전 **제외**
 - 키는 AI 서버 외 어디로도 전송하지 않음
 - 키를 코드에 하드코딩하지 않음 (`ServiceLocator` → `SettingsRepository.providerConfig()`)
 
@@ -55,7 +58,10 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 
 ### 채팅
 - 스트리밍 응답(SSE `data:` 라인, `[DONE]` 종료) → 타이핑 효과
-- 응답 중 **중지** 버튼, 생성 중이면 전송 버튼이 정지 버튼으로 바뀜
+- 응답 중 **중지** 버튼 → HTTP 연결을 실제로 끊고, 그때까지 받은 글만 저장
+- 대화를 보내는 중 다른 대화로 옮겨도 받은 부분까지는 저장됨
+- 사진·파일은 **최근 4개 메시지에서만 다시 전송** (그 이전 것은 파일 이름만 알려 줌) → 데이터·토큰 절약
+- 오류 안내 문구는 AI 에게 보내는 대화 기록과 내보내기에서 제외
 - 첫 메시지로 대화 제목 자동 생성
 - 대화 목록: 고정(pin), 삭제, 재선택
 - 마크다운 렌더링: 제목/목록/인용/표/**코드블록 + 복사 버튼**
@@ -64,8 +70,9 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 - 카메라 촬영 또는 갤러리 선택
 - **EXIF 회전 보정** (옆으로 누운 사진의 글자를 제대로 읽도록)
 - 긴 변 1568px 로 축소 후 JPEG 82 품질 → 토큰·전송량 절감
-- 텍스트 파일 첨부 (최대 12만 자)
-- 첨부 파일은 앱 전용 저장소에 복사되어 재시작 후에도 유지
+- 텍스트 파일 첨부 (최대 12만 자). 필요한 만큼만 읽고, UTF-8 / UTF-16 / CP949(EUC-KR) 자동 판별
+- 첨부 파일은 앱 전용 저장소에 복사되어 재시작 후에도 유지, **대화를 지우면 함께 삭제**
+- 카메라 원본은 축소본을 만든 직후 삭제, 내보낸 파일 캐시는 앱 시작 시 1시간 지난 것 정리
 
 ### 음성 입력
 입력창 오른쪽 마이크 버튼으로 말한 내용을 바로 글로 입력합니다.
@@ -80,7 +87,7 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 ### 대화 검색
 상단바 돋보기 또는 드로어의 **검색**으로 전체 기록을 찾습니다.
 
-- **제목 + 메시지 본문 동시 검색** (LIKE 기반, 스키마 변경 없음)
+- **제목 + 메시지 본문 동시 검색** (LIKE 기반, 스키마 변경 없음, `%`·`_` 도 글자 그대로 검색)
 - 입력 후 250ms 디바운스 → 타이핑 중 DB 부하 없음
 - 결과를 누르면 해당 대화로 바로 이동
 - 제목/내용 둘 다 일치해도 중복 없이 1건으로 표시
@@ -114,13 +121,13 @@ app/src/main/java/com/dskapp/
 │  │  ├─ AiModels.kt             AiMessage, AiError, ProviderConfig
 │  │  └─ Prompts.kt              시스템 프롬프트 / 추천 질문
 │  ├─ chat/                      Room: 대화 + 메시지, 첨부 JSON
-│  ├─ attachment/AttachmentStore 파일 저장/읽기
+│  ├─ attachment/                AttachmentStore 파일 저장·정리, TextDecoding 인코딩 판별
 │  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
 │  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
-│  └─ settings/SettingsRepository 암호화 설정
+│  └─ settings/                  SettingsRepository, KeystoreCipher (API 키 암호화)
 └─ ui/
-   ├─ DskAppNavHost.kt           Chat ↔ Settings, 태블릿 2단 분기
-   ├─ chat/                      ChatScreen, ChatViewModel, Drawer, ExportSheet
+   ├─ DskAppNavHost.kt           Chat ↔ Settings ↔ Search, 열린 대화의 ViewModel 만 유지
+   ├─ chat/                      ChatScreen(폰 드로어 / 넓은 화면 2단 공용), ChatViewModel, Drawer, ExportSheet
    ├─ components/                MessageBubble, MarkdownText, ChatComposer
    ├─ settings/                  SettingsScreen/ViewModel
    └─ theme/                     Material 3 (동적 색상 지원)
@@ -137,14 +144,28 @@ ViewModel·UI 코드는 변경이 필요 없습니다.
 요구 사항: **JDK 17+**, Android SDK **Platform 36**, **Build-Tools 36.0.0**
 
 ```bash
-# Windows
-gradlew.bat assembleDebug
+# 폰에 설치할 릴리스 빌드 (R8 축소·최적화, 약 1.8MB)
+gradlew.bat assembleRelease
 
-# macOS / Linux
-./gradlew assembleDebug
+# 단위 테스트
+gradlew.bat testDebugUnitTest
 ```
 
-결과물: `app/build/outputs/apk/debug/app-debug.apk`
+결과물: `app/build/outputs/apk/release/app-release.apk`
+
+디버그 빌드는 최적화가 꺼져 있어 Compose 화면이 버벅이고 메모리도 더 씁니다. 실제로 쓸 때는 릴리스 빌드를 설치하세요.
+
+### 릴리스 서명
+프로젝트 루트의 `keystore.properties` (git 제외) 를 읽습니다.
+
+```properties
+storeFile=C:/Users/user/.secrets/dskapp-release.jks
+storePassword=...
+keyAlias=dskapp
+keyPassword=...
+```
+
+파일이 없으면 서명되지 않은 릴리스 APK 가 만들어집니다. **키스토어를 잃어버리면 같은 앱으로 업데이트할 수 없으니** 백업해 두세요.
 
 ### Android Studio
 1. 이 폴더를 프로젝트로 열기
@@ -177,7 +198,9 @@ gradlew.bat assembleDebug
 이 앱은 API 키를 기기에 암호화 저장하고 AI 서버로 직접 호출합니다. 서버 운영 비용과
 지연이 없고, 키가 제3자를 거치지 않는다는 장점이 있습니다.
 
-대신 **APK를 타인에게 배포하면 그 키가 노출**됩니다. 배포 계획이 생기면
+키는 APK 안에 들어 있지 않고 각 사용자가 설정에서 직접 입력합니다. 따라서 APK 를
+공유해도 내 키가 함께 나가지는 않습니다. 다만 여러 사람에게 **내 키로** 서비스하려면
+기기마다 키를 나눠 줘야 하므로, 그때는
 `data/ai/AiClient.kt` 인터페이스의 구현체를 중계 서버용으로 하나 추가하고
 `di/ServiceLocator.kt` 의 `aiClient(context)` 반환값만 바꾸면 됩니다.
 ViewModel과 UI는 손대지 않아도 됩니다.

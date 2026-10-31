@@ -1,10 +1,17 @@
 package com.dskapp.data.ai
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -119,16 +126,43 @@ class OpenAiCompatibleClient(
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
+        // The read loop below blocks on the socket, which coroutine cancellation cannot
+        // interrupt. A sibling guard coroutine wakes up on cancellation and cancels the OkHttp
+        // call, closing the socket, so "stop" really stops the download instead of silently
+        // reading (and paying for) the rest of the answer.
+        val call = client.newCall(request)
+        coroutineScope {
+            val guard = launch {
+                try {
+                    awaitCancellation()
+                } finally {
+                    call.cancel()
+                }
+            }
+            try {
+                readStream(call, onText, onError)
+            } finally {
+                guard.cancel()
+            }
+        }
+    }.flowOn(Dispatchers.IO)
+
+    private suspend fun readStream(
+        call: Call,
+        onText: (String) -> Unit,
+        onError: (AiError) -> Unit
+    ) {
         try {
-            val response = client.newCall(request).execute()
-            response.use { okResponse ->
+            call.execute().use { okResponse ->
                 if (!okResponse.isSuccessful) {
                     onError(parseError(okResponse.code, okResponse.body?.string().orEmpty()))
-                    return@use
+                    return
                 }
 
-                val source = okResponse.body?.source() ?: return@use
+                val source = okResponse.body?.source() ?: return
                 while (!source.exhausted()) {
+                    // No further deltas once the user pressed stop.
+                    currentCoroutineContext().ensureActive()
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
 
@@ -145,12 +179,16 @@ class OpenAiCompatibleClient(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
-            onError(AiError.Network(e.message ?: "연결 실패"))
+            // A cancelled call fails with "Canceled"/"Socket closed": that is the user's stop,
+            // not a network error worth reporting.
+            if (!call.isCanceled()) onError(AiError.Network(e.message ?: "연결 실패"))
         } catch (e: Exception) {
             onError(AiError.Unexpected(e.message ?: "알 수 없는 오류"))
         }
-    }.flowOn(Dispatchers.IO)
+    }
 
     private fun buildRequest(
         config: ProviderConfig,

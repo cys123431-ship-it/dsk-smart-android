@@ -5,17 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
-import android.util.Base64
 import androidx.exifinterface.media.ExifInterface
-import com.dskapp.data.ai.AiImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.io.IOException
 
 /**
- * Turns a photo picked from the camera/gallery into an [AiImage] the API will accept.
+ * Turns a photo picked from the camera/gallery into compact JPEG bytes for the vision API.
  *
  * Why downscale: a modern phone photo is 4-12 MP, which base64-encodes to 5-15 MB and
  * would either be rejected or cost far more tokens than needed. Text in a photo is still
@@ -29,8 +26,6 @@ object ImageProcessor {
 
     /** JPEG quality; 82 keeps letters crisp while shrinking the payload. */
     private const val JPEG_QUALITY = 82
-
-    const val MIME_TYPE = "image/jpeg"
 
     /**
      * Loads [uri], applies EXIF rotation (camera photos are often stored sideways, which
@@ -87,24 +82,6 @@ object ImageProcessor {
                     out.toByteArray()
                 }
             }
-        }
-
-    /** Convenience wrapper for callers that need the base64 AI form directly. */
-    suspend fun toAiImage(context: Context, uri: Uri): Result<AiImage> =
-        toJpegBytes(context, uri).map { bytes ->
-            AiImage(
-                mimeType = MIME_TYPE,
-                base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            )
-        }
-
-
-    /** Writes an export file the share sheet can hand to other apps. */
-    suspend fun writeExport(context: Context, fileName: String, content: String): File =
-        withContext(Dispatchers.IO) {
-            val dir = File(context.cacheDir, "exports").apply { mkdirs() }
-            val safeName = fileName.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-            File(dir, safeName).apply { writeText(content) }
         }
 
     private fun calculateSampleSize(width: Int, height: Int): Int {

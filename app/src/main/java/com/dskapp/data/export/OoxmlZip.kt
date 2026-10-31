@@ -2,7 +2,6 @@ package com.dskapp.data.export
 
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -35,9 +34,6 @@ object OoxmlZip {
 
         target.writeBytes(buffer.toByteArray())
     }
-
-    /** CRC helper kept for callers that need stored (uncompressed) parts. */
-    fun crc32(bytes: ByteArray): Long = CRC32().apply { update(bytes) }.value
 
     private const val FIXED_TIME = 1_700_000_000_000L
 }

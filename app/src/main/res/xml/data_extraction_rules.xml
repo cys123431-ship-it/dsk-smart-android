@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <!-- The API key is stored in encrypted preferences and must never leave the device -->
-        <exclude domain="sharedpref" path="dsk_secure_prefs.xml" />
+        <!-- Holds the Keystore-encrypted API key; the Keystore key itself cannot be backed up,
+             so a restored copy would be undecryptable anyway. Keep it on this device. -->
+        <exclude domain="sharedpref" path="dsk_settings.xml" />
     </cloud-backup>
     <device-transfer>
-        <exclude domain="sharedpref" path="dsk_secure_prefs.xml" />
+        <exclude domain="sharedpref" path="dsk_settings.xml" />
     </device-transfer>
 </data-extraction-rules>

@@ -2,14 +2,12 @@ package com.dskapp.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -22,6 +20,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
@@ -29,9 +29,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.dskapp.di.ServiceLocator
 import com.dskapp.ui.chat.ChatScreen
-import com.dskapp.ui.chat.ChatScaffold
 import com.dskapp.ui.chat.ChatViewModel
-import com.dskapp.ui.chat.ConversationDrawer
 import com.dskapp.ui.chat.ConversationListViewModel
 import com.dskapp.ui.chat.SearchScreen
 import com.dskapp.ui.chat.SearchViewModel
@@ -79,6 +77,15 @@ fun DskAppNavHost() {
         }
     }
 
+    // One ViewModelStore for the open thread only, cleared when another thread is selected.
+    // Keying viewModel() by id in the shared back-stack entry kept every thread ever opened
+    // (and its DB observers) alive until the app was killed. It lives outside the NavHost so
+    // a trip to Settings/Search keeps the draft, pending photos and a running answer.
+    val chatOwner = remember(selectedId) { ConversationViewModelOwner() }
+    DisposableEffect(chatOwner) {
+        onDispose { chatOwner.viewModelStore.clear() }
+    }
+
     NavHost(navController = navController, startDestination = ChatRoute) {
         composable<ChatRoute> {
             if (selectedId == 0L) {
@@ -87,7 +94,7 @@ fun DskAppNavHost() {
             }
 
             val chatViewModel: ChatViewModel = viewModel(
-                key = "chat-$selectedId",
+                viewModelStoreOwner = chatOwner,
                 factory = ChatViewModel.factory(
                     context = context,
                     conversationId = selectedId,
@@ -97,46 +104,18 @@ fun DskAppNavHost() {
                 )
             )
 
-            val newChat: () -> Unit = {
-                listViewModel.newConversation { id -> selectedId = id }
-            }
-            val openSettings: () -> Unit = { navController.navigate(SettingsRoute) }
-            val openSearch: () -> Unit = { navController.navigate(SearchRoute) }
-
-            val isTablet = LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH_DP
-
-            if (isTablet) {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    ConversationDrawer(
-                        conversations = conversations,
-                        selectedId = selectedId,
-                        onSelect = { selectedId = it },
-                        onNewChat = newChat,
-                        onDelete = listViewModel::delete,
-                        onTogglePin = listViewModel::togglePin,
-                        onOpenSettings = openSettings,
-                        onOpenSearch = openSearch,
-                        modifier = Modifier.width(300.dp)
-                    )
-                    TabletChatPane(
-                        viewModel = chatViewModel,
-                        onNewChat = newChat,
-                        onOpenSearch = openSearch
-                    )
-                }
-            } else {
-                ChatScreen(
-                    viewModel = chatViewModel,
-                    conversations = conversations,
-                    currentConversationId = selectedId,
-                    onSelectConversation = { selectedId = it },
-                    onNewChat = newChat,
-                    onDeleteConversation = listViewModel::delete,
-                    onTogglePin = listViewModel::togglePin,
-                    onOpenSettings = openSettings,
-                    onOpenSearch = openSearch
-                )
-            }
+            ChatScreen(
+                viewModel = chatViewModel,
+                conversations = conversations,
+                currentConversationId = selectedId,
+                onSelectConversation = { selectedId = it },
+                onNewChat = { listViewModel.newConversation { id -> selectedId = id } },
+                onDeleteConversation = listViewModel::delete,
+                onTogglePin = listViewModel::togglePin,
+                onOpenSettings = { navController.navigate(SettingsRoute) },
+                onOpenSearch = { navController.navigate(SearchRoute) },
+                permanentDrawer = LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH_DP
+            )
         }
 
         composable<SettingsRoute> {
@@ -161,31 +140,9 @@ fun DskAppNavHost() {
     }
 }
 
-/** Tablet right pane: no drawer button, history is always visible on the left. */
-@Composable
-private fun TabletChatPane(
-    viewModel: ChatViewModel,
-    onNewChat: () -> Unit,
-    onOpenSearch: () -> Unit
-) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
-
-    ChatScaffold(
-        state = state,
-        viewModel = viewModel,
-        snackbarHostState = snackbarHostState,
-        onOpenDrawer = null,
-        onNewChat = onNewChat,
-        onAttachmentClick = {},
-        onPickImage = {},
-        onPickCamera = {},
-        onPickFile = {},
-        isListening = false,
-        onToggleVoice = {},
-        onOpenSearch = onOpenSearch,
-        modifier = Modifier.fillMaxSize()
-    )
+/** Owns the ChatViewModel of the currently open thread only. */
+private class ConversationViewModelOwner : ViewModelStoreOwner {
+    override val viewModelStore = ViewModelStore()
 }
 
 /** Shown for the instant before the first conversation row exists. */

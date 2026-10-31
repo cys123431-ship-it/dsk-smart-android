@@ -23,8 +23,8 @@ data class ConversationEntity(
 )
 
 /**
- * A single message. [imagesJson] holds the attached images as a JSON array of
- * {mime, path} so thumbnails survive app restarts without bloating the row with base64.
+ * A single message. [attachmentsJson] holds the attachments as a JSON array of
+ * {kind, path, name, mime} so thumbnails survive app restarts without bloating the row with base64.
  */
 @Entity(
     tableName = "messages",
@@ -69,15 +69,6 @@ interface ChatDao {
     @Insert
     suspend fun insertMessage(message: MessageEntity): Long
 
-    @Query("UPDATE messages SET content = :content, isError = :isError WHERE id = :id")
-    suspend fun updateMessageContent(id: Long, content: String, isError: Boolean)
-
-    @Query("UPDATE messages SET content = :content WHERE id = :id")
-    suspend fun updateMessageBody(id: Long, content: String)
-
-    @Query("DELETE FROM messages WHERE id = :id")
-    suspend fun deleteMessage(id: Long)
-
     @Query("UPDATE conversations SET updatedAt = :updatedAt WHERE id = :id")
     suspend fun touchConversation(id: Long, updatedAt: Long)
 
@@ -101,8 +92,11 @@ interface ChatDao {
     @Query(
         """
         SELECT * FROM conversations
-        WHERE title LIKE '%' || :query || '%'
-           OR id IN (SELECT conversationId FROM messages WHERE content LIKE '%' || :query || '%')
+        WHERE title LIKE '%' || :query || '%' ESCAPE '\'
+           OR id IN (
+               SELECT conversationId FROM messages
+               WHERE content LIKE '%' || :query || '%' ESCAPE '\'
+           )
         ORDER BY isPinned DESC, updatedAt DESC
         """
     )
@@ -112,7 +106,7 @@ interface ChatDao {
     @Query(
         """
         SELECT content FROM messages
-        WHERE conversationId = :conversationId AND content LIKE '%' || :query || '%'
+        WHERE conversationId = :conversationId AND content LIKE '%' || :query || '%' ESCAPE '\'
         ORDER BY createdAt ASC LIMIT 1
         """
     )

@@ -11,7 +11,11 @@ data class ChatMessage(
     val isStreaming: Boolean = false,
     val isError: Boolean = false,
     val isThinking: Boolean = false
-)
+) {
+    /** A real assistant answer (not an error bubble or an empty placeholder). */
+    val isExportable: Boolean
+        get() = !isUser && !isError && content.isNotBlank()
+}
 
 /** Everything the chat screen needs to render. */
 data class ChatUiState(

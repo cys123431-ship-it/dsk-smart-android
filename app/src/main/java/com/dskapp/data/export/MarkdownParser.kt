@@ -12,7 +12,9 @@ object MarkdownParser {
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
     private val bulletRegex = Regex("^\\s*[-*+]\\s+(.*)$")
     private val orderedRegex = Regex("^\\s*\\d+[.)]\\s+(.*)$")
-    private val ruleRegex = Regex("^\\s*([-*_])\\s*\\1\\s*\\1[\\s\\1]*$")
+    // Three or more of the same marker, optionally spaced ("---", "* * *"). A back-reference
+    // cannot appear inside a character class, so the repetition is spelled out as a group.
+    private val ruleRegex = Regex("^\\s*([-*_])(?:\\s*\\1){2,}\\s*$")
     private val tableSeparatorRegex = Regex("^\\s*\\|?\\s*:?-{2,}:?\\s*(\\|\\s*:?-{2,}:?\\s*)*\\|?\\s*$")
 
     fun parse(markdown: String): List<MdBlock> {

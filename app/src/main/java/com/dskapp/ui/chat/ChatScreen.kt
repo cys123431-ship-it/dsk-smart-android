@@ -7,8 +7,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuOpen
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
@@ -31,7 +34,6 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,8 +42,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.chat.Attachment
 import com.dskapp.data.chat.ConversationEntity
 import com.dskapp.data.export.ExportFormat
@@ -52,10 +56,12 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Full chat screen (phone layout).
+ * Full chat screen.
  *
- * Mirrors ChatGPT: a slim top bar with drawer + new-chat + export actions, history in a
- * modal drawer, the message list, and the composer pinned above the keyboard.
+ * Mirrors ChatGPT: a slim top bar with drawer + new-chat + export actions, the message list,
+ * and the composer pinned above the keyboard. History is a modal drawer on phones and a
+ * fixed left pane when [permanentDrawer] is true (wide screens such as an unfolded phone);
+ * pickers, camera and voice input are shared by both layouts.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,15 +74,16 @@ fun ChatScreen(
     onDeleteConversation: (Long) -> Unit,
     onTogglePin: (ConversationEntity) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenSearch: () -> Unit
+    onOpenSearch: () -> Unit,
+    permanentDrawer: Boolean = false
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
-    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    var cameraCapture by remember { mutableStateOf<CameraCapture?>(null) }
     var isListening by remember { mutableStateOf(false) }
 
     // Speech recognizer is created lazily and released with the screen.
@@ -140,8 +147,57 @@ fun ChatScreen(
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) cameraUri?.let(viewModel::attachImage)
-        cameraUri = null
+        cameraCapture?.let { capture ->
+            // The full-size original is deleted after import (or right away when cancelled).
+            if (success) viewModel.attachImage(capture.uri, tempFile = capture.file) else capture.file.delete()
+        }
+        cameraCapture = null
+    }
+
+    val chat: @Composable (onOpenDrawer: (() -> Unit)?, modifier: Modifier) -> Unit = { onOpenDrawer, modifier ->
+        ChatScaffold(
+            state = state,
+            viewModel = viewModel,
+            snackbarHostState = snackbarHostState,
+            onOpenDrawer = onOpenDrawer,
+            onNewChat = onNewChat,
+            onAttachmentClick = { attachment -> openAttachment(context, attachment) },
+            onPickImage = { imagePicker.launch("image/*") },
+            onPickFile = {
+                filePicker.launch(arrayOf("text/*", "application/json", "application/xml"))
+            },
+            onPickCamera = {
+                val capture = createCameraCapture(context)
+                if (capture != null) {
+                    cameraCapture = capture
+                    cameraLauncher.launch(capture.uri)
+                } else {
+                    scope.launch { snackbarHostState.showSnackbar("카메라를 사용할 수 없습니다.") }
+                }
+            },
+            isListening = isListening,
+            onToggleVoice = toggleVoice,
+            onOpenSearch = onOpenSearch,
+            modifier = modifier
+        )
+    }
+
+    if (permanentDrawer) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            ConversationDrawer(
+                conversations = conversations,
+                selectedId = currentConversationId,
+                onSelect = onSelectConversation,
+                onNewChat = onNewChat,
+                onDelete = onDeleteConversation,
+                onTogglePin = onTogglePin,
+                onOpenSettings = onOpenSettings,
+                onOpenSearch = onOpenSearch,
+                modifier = Modifier.width(300.dp)
+            )
+            chat(null, Modifier.weight(1f).fillMaxHeight())
+        }
+        return
     }
 
     ModalNavigationDrawer(
@@ -173,39 +229,19 @@ fun ChatScreen(
             }
         }
     ) {
-        ChatScaffold(
-            state = state,
-            viewModel = viewModel,
-            snackbarHostState = snackbarHostState,
-            onOpenDrawer = { scope.launch { drawerState.open() } },
-            onNewChat = onNewChat,
-            onAttachmentClick = { attachment -> openAttachment(context, attachment) },
-            onPickImage = { imagePicker.launch("image/*") },
-            onPickFile = {
-                filePicker.launch(arrayOf("text/*", "application/json", "application/xml"))
-            },
-            onPickCamera = {
-                val uri = createCameraUri(context)
-                if (uri != null) {
-                    cameraUri = uri
-                    cameraLauncher.launch(uri)
-                } else {
-                    scope.launch { snackbarHostState.showSnackbar("카메라를 사용할 수 없습니다.") }
-                }
-            },
-            isListening = isListening,
-            onToggleVoice = toggleVoice,
-            onOpenSearch = onOpenSearch
-        )
+        chat({ scope.launch { drawerState.open() } }, Modifier)
     }
 }
 
+/** A camera target: the cache file and the content URI handed to the camera app. */
+private class CameraCapture(val file: File, val uri: Uri)
+
 /** Creates a cache file + content URI for the camera intent. */
-private fun createCameraUri(context: Context): Uri? = runCatching {
+private fun createCameraCapture(context: Context): CameraCapture? = runCatching {
     val dir = File(context.cacheDir, "camera").apply { mkdirs() }
     val file = File(dir, "capture_${System.currentTimeMillis()}.jpg")
     file.createNewFile()
-    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    CameraCapture(file, FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file))
 }.getOrNull()
 
 /**
@@ -279,7 +315,7 @@ internal fun ChatScaffold(
                     }
                     IconButton(
                         onClick = { showExportSheet = true },
-                        enabled = state.messages.any { !it.isUser && it.content.isNotBlank() }
+                        enabled = state.messages.any { it.isExportable }
                     ) {
                         Icon(Icons.Filled.IosShare, contentDescription = "내보내기")
                     }
@@ -318,7 +354,7 @@ internal fun ChatScaffold(
         )
     }
 
-    val lastAssistant = state.messages.lastOrNull { !it.isUser && it.content.isNotBlank() }
+    val lastAssistant = state.messages.lastOrNull { it.isExportable }
 
     if (showExportSheet && lastAssistant != null) {
         ExportSheet(

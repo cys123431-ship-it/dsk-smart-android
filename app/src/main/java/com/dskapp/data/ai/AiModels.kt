@@ -58,9 +58,6 @@ sealed interface AiError {
     data class Network(val message: String) : AiError
     data class Provider(val status: Int, val message: String) : AiError
     data class Unexpected(val message: String) : AiError
-
-    val isRetryable: Boolean
-        get() = this is RateLimited || this is Network || this is Provider
 }
 
 val AiError.userMessage: String

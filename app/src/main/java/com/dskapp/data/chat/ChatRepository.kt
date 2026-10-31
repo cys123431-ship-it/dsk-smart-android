@@ -1,6 +1,7 @@
 package com.dskapp.data.chat
 
 import android.content.Context
+import com.dskapp.data.attachment.AttachmentStore
 import kotlinx.coroutines.flow.Flow
 
 /** Repository over [ChatDao]; keeps ViewModels free of SQL details. */
@@ -46,17 +47,23 @@ class ChatRepository(private val dao: ChatDao) {
         return id
     }
 
-    suspend fun updateMessageContent(messageId: Long, content: String, isError: Boolean = false) {
-        dao.updateMessageContent(messageId, content, isError)
-    }
-
     suspend fun renameConversation(id: Long, title: String) {
         dao.renameConversation(id, title, System.currentTimeMillis())
     }
 
     suspend fun setPinned(id: Long, pinned: Boolean) = dao.setPinned(id, pinned)
 
-    suspend fun deleteConversation(id: Long) = dao.deleteConversation(id)
+    /**
+     * Deletes the thread (messages cascade) and the attachment files its messages point to,
+     * which would otherwise stay in app storage forever. If that was the last thread, a fresh
+     * one is created so the chat screen always has a valid conversation to write into.
+     */
+    suspend fun deleteConversation(id: Long) {
+        val attachments = dao.getMessages(id).flatMap { AttachmentCodec.decode(it.attachmentsJson) }
+        dao.deleteConversation(id)
+        AttachmentStore.deleteAll(attachments)
+        if (dao.countConversations() == 0) createConversation()
+    }
 
     suspend fun ensureWelcomeConversation() {
         if (dao.countConversations() == 0) {
@@ -70,13 +77,13 @@ class ChatRepository(private val dao: ChatDao) {
         return if (trimmed.isEmpty()) {
             kotlinx.coroutines.flow.flowOf(emptyList())
         } else {
-            dao.searchConversations(trimmed)
+            dao.searchConversations(escapeLikePattern(trimmed))
         }
     }
 
     /** First matching message body, used to show why a thread matched. */
     suspend fun snippet(conversationId: Long, query: String): String? =
-        dao.findSnippet(conversationId, query.trim())
+        dao.findSnippet(conversationId, escapeLikePattern(query.trim()))
 
     companion object Factory {
         const val NEW_CONVERSATION_TITLE = "새 대화"
