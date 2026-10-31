@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Exports are written to cache/exports and shared via the share sheet -->
+    <cache-path name="exports" path="exports/" />
+    <!-- The camera capture temporarily lands here before being imported -->
+    <cache-path name="camera" path="camera/" />
+    <!-- Imported attachments (photos, text files) live in files/attachments -->
+    <files-path name="attachments" path="attachments/" />
+</paths>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- The API key is stored in encrypted preferences and must never leave the device -->
+        <exclude domain="sharedpref" path="dsk_secure_prefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="dsk_secure_prefs.xml" />
+    </device-transfer>
+</data-extraction-rules>

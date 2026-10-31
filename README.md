@@ -1,0 +1,188 @@
+# DSK 스마트 (DSKapp)
+
+ChatGPT 스타일의 범용 AI 채팅 앱. 특정 기능 전용 앱이 아니라 **채팅으로 모든 것을 요청**하는 구조입니다.
+
+- 문서 작성·편집, 번역, 사진 속 영어 해석, 이미지 글자 추출, 코딩까지 모두 채팅 안에서 처리
+- 결과를 **docx / xlsx / pptx / pdf / md / txt** 로 내보내기 (전부 기기에서 생성)
+- 스마트폰 + 태블릿 대응 (좁은 화면은 드로어, 840dp 이상은 좌우 2단)
+
+---
+
+## 1. AI 연결: 내 Base URL + API Key
+
+앱은 **OpenAI 호환 API**를 사용합니다. 기본값은 River AI이며, 설정에서 언제든 바꿀 수 있습니다.
+
+| 항목 | 기본값 |
+|---|---|
+| 서버 주소 (Base URL) | `https://api.river.ai/v1` |
+| 인증 | `Authorization: Bearer <API 키>` |
+| 엔드포인트 | `POST /chat/completions`, `GET /models` |
+| 기본 모델 | `deepseek-ai/DeepSeek-V4.1-Flash` |
+
+River AI 문서에서 확인한 모델 ID:
+
+```
+deepseek-ai/DeepSeek-V4.1-Flash
+deepseek-ai/DeepSeek-V4.1-Flash-1017
+moonshotai/Kimi-K3
+zai-org/GLM-5.3-Flash
+GLM-5.3
+Qwen/Qwen3.8-27B-FP8
+nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
+```
+
+### 사용 방법
+1. 앱 실행 → 우측 상단에서 드로어 열기 → **설정**
+2. 서버 주소 / API 키 / 모델 입력
+3. **모델 목록** 버튼으로 실제 사용 가능한 모델 확인 가능
+4. **연결 테스트**로 URL·키·모델이 함께 맞는지 즉시 검증
+5. **저장**
+
+> 다른 OpenAI 호환 서버(vLLM, Ollama, OpenRouter 등)도 Base URL만 바꾸면 그대로 동작합니다.
+
+---
+
+## 2. 보안
+
+- API 키는 **EncryptedSharedPreferences** (Android Keystore, AES-256-GCM)에만 저장
+- `data_extraction_rules.xml` 에서 백업·기기이전 **제외** → 평문 XML이나 클라우드 백업으로 유출되지 않음
+- 키는 AI 서버 외 어디로도 전송하지 않음
+- 키를 코드에 하드코딩하지 않음 (`ServiceLocator` → `SettingsRepository.providerConfig()`)
+
+---
+
+## 3. 주요 기능
+
+### 채팅
+- 스트리밍 응답(SSE `data:` 라인, `[DONE]` 종료) → 타이핑 효과
+- 응답 중 **중지** 버튼, 생성 중이면 전송 버튼이 정지 버튼으로 바뀜
+- 첫 메시지로 대화 제목 자동 생성
+- 대화 목록: 고정(pin), 삭제, 재선택
+- 마크다운 렌더링: 제목/목록/인용/표/**코드블록 + 복사 버튼**
+
+### 사진 · 첨부
+- 카메라 촬영 또는 갤러리 선택
+- **EXIF 회전 보정** (옆으로 누운 사진의 글자를 제대로 읽도록)
+- 긴 변 1568px 로 축소 후 JPEG 82 품질 → 토큰·전송량 절감
+- 텍스트 파일 첨부 (최대 12만 자)
+- 첨부 파일은 앱 전용 저장소에 복사되어 재시작 후에도 유지
+
+### 음성 입력
+입력창 오른쪽 마이크 버튼으로 말한 내용을 바로 글로 입력합니다.
+
+- Android 기본 `SpeechRecognizer` 사용 (별도 SDK·과금 없음)
+- **한국어(ko-KR)** 기본, 말하는 동안 중간 결과가 실시간으로 입력창에 반영
+- 마이크 권한은 처음 누를 때만 요청 (거부 시 안내 후 계속 타이핑 가능)
+- 화면을 벗어나면 인식기가 자동 정리됨
+- 오류 메시지는 원인별로 구분 (권한·네트워크·무음성·인식 실패)
+- 삼성·구글 음성 서비스가 있는 기기에서 동작하며, 없으면 안내만 표시
+
+### 대화 검색
+상단바 돋보기 또는 드로어의 **검색**으로 전체 기록을 찾습니다.
+
+- **제목 + 메시지 본문 동시 검색** (LIKE 기반, 스키마 변경 없음)
+- 입력 후 250ms 디바운스 → 타이핑 중 DB 부하 없음
+- 결과를 누르면 해당 대화로 바로 이동
+- 제목/내용 둘 다 일치해도 중복 없이 1건으로 표시
+
+### 내보내기
+마지막 AI 답변을 아래 형식으로 변환 후 공유 시트로 전달합니다. **전부 오프라인 생성**이며 외부 라이브러리를 쓰지 않습니다.
+
+| 형식 | 구현 |
+|---|---|
+| `.md` | 원문 마크다운 |
+| `.txt` | 서식 제거한 텍스트 |
+| `.docx` | WordprocessingML 직접 생성 (제목 스타일, 목록, 표, 코드) |
+| `.xlsx` | 표를 시트별로 분리, `내용` 시트에 본문 |
+| `.pptx` | 제목마다 슬라이드 1장, 불릿 자동 배치 |
+| `.pdf` | Android `PdfDocument` + `StaticLayout` (한글 줄바꿈 정확) |
+
+---
+
+## 4. 프로젝트 구조
+
+```
+app/src/main/java/com/dskapp/
+├─ DskApp.kt                     Application (첫 실행 시 대화 1개 생성)
+├─ MainActivity.kt               edge-to-edge + IME inset 처리
+├─ di/ServiceLocator.kt          수동 DI (AI 클라이언트 교체 지점)
+├─ data/
+│  ├─ ai/
+│  │  ├─ AiClient.kt             ← 인터페이스 (교체 지점)
+│  │  ├─ OpenAiCompatibleClient.kt  실제 구현 (OkHttp, SSE 스트리밍)
+│  │  ├─ ChatWireModels.kt       요청/응답 직렬화 모델
+│  │  ├─ AiModels.kt             AiMessage, AiError, ProviderConfig
+│  │  └─ Prompts.kt              시스템 프롬프트 / 추천 질문
+│  ├─ chat/                      Room: 대화 + 메시지, 첨부 JSON
+│  ├─ attachment/AttachmentStore 파일 저장/읽기
+│  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
+│  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
+│  └─ settings/SettingsRepository 암호화 설정
+└─ ui/
+   ├─ DskAppNavHost.kt           Chat ↔ Settings, 태블릿 2단 분기
+   ├─ chat/                      ChatScreen, ChatViewModel, Drawer, ExportSheet
+   ├─ components/                MessageBubble, MarkdownText, ChatComposer
+   ├─ settings/                  SettingsScreen/ViewModel
+   └─ theme/                     Material 3 (동적 색상 지원)
+```
+
+### 나중에 중계 서버로 전환하려면
+`AiClient` 구현체만 추가하고 `ServiceLocator.aiClient()` 의 바인딩을 바꾸면 됩니다.
+ViewModel·UI 코드는 변경이 필요 없습니다.
+
+---
+
+## 5. 빌드
+
+요구 사항: **JDK 17+**, Android SDK **Platform 36**, **Build-Tools 36.0.0**
+
+```bash
+# Windows
+gradlew.bat assembleDebug
+
+# macOS / Linux
+./gradlew assembleDebug
+```
+
+결과물: `app/build/outputs/apk/debug/app-debug.apk`
+
+### Android Studio
+1. 이 폴더를 프로젝트로 열기
+2. `local.properties` 의 `sdk.dir` 을 본인 SDK 경로로 수정
+3. Gradle Sync 후 Run
+
+### 버전
+| | |
+|---|---|
+| AGP | 9.5.0 (내장 Kotlin 사용 — `kotlin.android` 플러그인 불필요) |
+| Gradle | 9.8.2 |
+| Kotlin | 2.4.21 |
+| Compose BOM | 2025.09.01 |
+| compileSdk / targetSdk | 36 |
+| minSdk | 26 (Android 8.0) |
+
+> 최신 AndroidX(2026.x)는 compileSdk 37을 요구하지만 SDK 37이 아직 공개 저장소에 없어,
+> compileSdk 36과 호환되는 안정 버전으로 고정했습니다.
+
+---
+
+## 6. 1차 범위에 포함되지 않은 것
+
+- **기존 파일 편집** (업로드한 docx/xlsx/pdf의 레이아웃을 유지하며 수정): 내용을 새 파일로 생성하는 방식만 지원
+- 다크 테마 수동 전환 (시스템 설정을 따름)
+
+## 7. 설계 메모
+
+### 중계 서버를 쓰지 않는 이유와 대가
+이 앱은 API 키를 기기에 암호화 저장하고 AI 서버로 직접 호출합니다. 서버 운영 비용과
+지연이 없고, 키가 제3자를 거치지 않는다는 장점이 있습니다.
+
+대신 **APK를 타인에게 배포하면 그 키가 노출**됩니다. 배포 계획이 생기면
+`data/ai/AiClient.kt` 인터페이스의 구현체를 중계 서버용으로 하나 추가하고
+`di/ServiceLocator.kt` 의 `aiClient(context)` 반환값만 바꾸면 됩니다.
+ViewModel과 UI는 손대지 않아도 됩니다.
+
+### 검색을 FTS 대신 LIKE로 한 이유
+개인 대화 기록은 수천 건 수준이고, FTS는 별도 가상 테이블과 데이터 재빌드·마이그레이션이
+필요합니다. `title`/`content` LIKE 조회로 충분한 속도를 얻으면서 스키마를 그대로 유지했습니다.
+
