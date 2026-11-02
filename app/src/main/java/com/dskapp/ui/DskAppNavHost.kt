@@ -28,7 +28,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.dskapp.data.schedule.ScheduleRepository
 import com.dskapp.di.ServiceLocator
+import com.dskapp.ui.bookmarks.BookmarksScreen
+import com.dskapp.ui.bookmarks.BookmarksViewModel
+import com.dskapp.ui.schedule.ScheduleScreen
+import com.dskapp.ui.schedule.ScheduleViewModel
 import com.dskapp.ui.chat.ChatScreen
 import com.dskapp.ui.chat.ChatViewModel
 import com.dskapp.ui.chat.ConversationListViewModel
@@ -49,6 +54,12 @@ private data object SettingsRoute
 
 @Serializable
 private data object SearchRoute
+
+@Serializable
+private data object BookmarksRoute
+
+@Serializable
+private data object ScheduleRoute
 
 /**
  * App shell.
@@ -156,7 +167,9 @@ fun DskAppNavHost() {
                 onOpenSearch = { navController.navigate(SearchRoute) },
                 permanentDrawer = LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH_DP,
                 startAction = startAction,
-                onStartActionHandled = { launchTarget = null }
+                onStartActionHandled = { launchTarget = null },
+                onOpenBookmarks = { navController.navigate(BookmarksRoute) },
+                onOpenSchedule = { navController.navigate(ScheduleRoute) }
             )
         }
 
@@ -171,7 +184,36 @@ fun DskAppNavHost() {
                         ServiceLocator.commands(context)
                     )
                 ),
+                onBack = { navController.popBackStack() },
+                onOpenSchedule = { navController.navigate(ScheduleRoute) }
+            )
+        }
+
+        composable<BookmarksRoute> {
+            BookmarksScreen(
+                viewModel = viewModel(factory = BookmarksViewModel.factory(chatRepository)),
+                onOpenConversation = { id ->
+                    selectedId = id
+                    navController.popBackStack(ChatRoute, inclusive = false)
+                },
                 onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable<ScheduleRoute> {
+            ScheduleScreen(
+                viewModel = viewModel(
+                    factory = ScheduleViewModel.factory(
+                        context,
+                        ScheduleRepository.get(context),
+                        settingsRepository
+                    )
+                ),
+                onBack = { navController.popBackStack() },
+                onOpenConversation = { id ->
+                    selectedId = id
+                    navController.popBackStack(ChatRoute, inclusive = false)
+                }
             )
         }
 

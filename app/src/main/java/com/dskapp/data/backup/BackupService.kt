@@ -53,7 +53,9 @@ class BackupService(private val context: Context, private val repository: ChatRe
                     isError = message.isError,
                     promptTokens = message.promptTokens,
                     completionTokens = message.completionTokens,
-                    attachments = backupAttachments
+                    attachments = backupAttachments,
+                    reasoning = message.reasoning,
+                    isBookmarked = message.isBookmarked
                 )
             }
             messageCount += backupMessages.size
@@ -157,7 +159,9 @@ class BackupService(private val context: Context, private val repository: ChatRe
                         attachmentsJson = AttachmentCodec.encode(attachments),
                         isError = message.isError,
                         promptTokens = message.promptTokens,
-                        completionTokens = message.completionTokens
+                        completionTokens = message.completionTokens,
+                        reasoning = message.reasoning,
+                        isBookmarked = message.isBookmarked
                     )
                 }
                 repository.insertRestored(

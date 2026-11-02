@@ -23,7 +23,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,7 +55,9 @@ fun ConversationDrawer(
     onTogglePin: (ConversationEntity) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSearch: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenBookmarks: () -> Unit = {},
+    onOpenSchedule: () -> Unit = {}
 ) {
     Surface(
         modifier = modifier.fillMaxHeight(),
@@ -107,6 +111,22 @@ fun ConversationDrawer(
                 icon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 selected = false,
                 onClick = onOpenSearch,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            NavigationDrawerItem(
+                label = { Text("즐겨찾기") },
+                icon = { Icon(Icons.Filled.Star, contentDescription = null) },
+                selected = false,
+                onClick = onOpenBookmarks,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            NavigationDrawerItem(
+                label = { Text("예약 작업") },
+                icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
+                selected = false,
+                onClick = onOpenSchedule,
                 modifier = Modifier.fillMaxWidth()
             )
 

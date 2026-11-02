@@ -1,5 +1,6 @@
 package com.dskapp.data.chat
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -54,7 +55,19 @@ data class MessageEntity(
     val attachmentsJson: String = "[]",
     val isError: Boolean = false,
     val promptTokens: Int? = null,
-    val completionTokens: Int? = null
+    val completionTokens: Int? = null,
+    /** The model's thinking, kept apart from the answer and never sent back to the model. */
+    val reasoning: String? = null,
+    @ColumnInfo(defaultValue = "0") val isBookmarked: Boolean = false
+)
+
+/** A starred answer with the title of its thread, for the 즐겨찾기 screen. */
+data class BookmarkItem(
+    val messageId: Long,
+    val conversationId: Long,
+    val conversationTitle: String,
+    val content: String,
+    val createdAt: Long
 )
 
 @Dao
@@ -112,6 +125,20 @@ interface ChatDao {
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteConversation(id: Long)
 
+    @Query("UPDATE messages SET isBookmarked = :bookmarked WHERE id = :id")
+    suspend fun setBookmarked(id: Long, bookmarked: Boolean)
+
+    @Query(
+        """
+        SELECT m.id AS messageId, m.conversationId AS conversationId, c.title AS conversationTitle,
+               m.content AS content, m.createdAt AS createdAt
+        FROM messages m JOIN conversations c ON c.id = m.conversationId
+        WHERE m.isBookmarked = 1
+        ORDER BY m.createdAt DESC
+        """
+    )
+    fun observeBookmarks(): Flow<List<BookmarkItem>>
+
     @Query("SELECT COUNT(*) FROM conversations")
     suspend fun countConversations(): Int
 
@@ -146,7 +173,7 @@ interface ChatDao {
 
 @Database(
     entities = [ConversationEntity::class, MessageEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class ChatDatabase : RoomDatabase() {
@@ -163,6 +190,14 @@ abstract class ChatDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE conversations ADD COLUMN summaryUpToId INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN promptTokens INTEGER")
                 db.execSQL("ALTER TABLE messages ADD COLUMN completionTokens INTEGER")
+            }
+        }
+
+        /** v3: reasoning text and the bookmark flag on messages. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN reasoning TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN isBookmarked INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

@@ -7,6 +7,15 @@
     <!-- Optional: voice dictation into documents -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Scheduled tasks: exact daily alarms, results as notifications, re-arm after reboot.
+         USE_EXACT_ALARM is fine for this privately installed app (no store policy applies). -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
@@ -58,6 +67,25 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Alarm for a scheduled task, plus reboot / update / clock changes to re-arm alarms.
+             Not exported: other apps must not be able to trigger paid AI runs. The system still
+             delivers its own broadcasts (boot, package replaced, time set) to it. -->
+        <receiver
+            android:name=".data.schedule.ScheduleReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".data.schedule.ScheduledTaskJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

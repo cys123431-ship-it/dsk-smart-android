@@ -87,6 +87,21 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 ### 앱 아이콘 바로가기
 - 아이콘 길게 누르기 → **새 채팅 / 사진으로 질문(카메라 바로 열림) / 음성으로 질문(받아쓰기 바로 시작)**
 
+### 코드 색상 · 생각 과정 · 즐겨찾기
+- 코드 블록에 언어별 색 (Kotlin·Java·JS/TS·Python·C/C++·C#·Go·Rust·Swift·SQL·Bash·JSON·XML 등, 다크 모드 색 별도)
+- 추론 모델의 **생각 과정**은 답변 위 "💭 생각 과정 (N자)"로 접혀 표시 (`reasoning_content` / `<think>` 모두 지원, AI 에게 다시 보내지 않음)
+- 답변 아래 ★ → 드로어 **즐겨찾기**에서 모아 보기, 누르면 그 대화로 이동
+
+### 예약 작업
+- 드로어 또는 설정 → **예약 작업**: 이름, 요청, 시각(한국 시간), 요일(매일/평일/주말/직접), 모델 선택
+- 정한 시각에 AI 에 요청 → 결과를 **알림**으로 받고 "⏰ 이름" 대화에 저장 (요청에 링크가 있으면 읽어서 함께 보냄)
+- 정확한 알람(`USE_EXACT_ALARM`) + 백그라운드 작업(JobScheduler, 추가 라이브러리 없음), 재부팅 후 자동 재등록
+- 삼성 폰은 배터리 설정에서 DSK 스마트를 "제한 없음"으로 두면 시각이 정확함
+
+### 앱 잠금
+- 설정 → 앱 잠금: 앱을 열 때 지문·얼굴·화면 잠금으로 확인 (1분 넘게 다른 앱에 있다가 돌아오면 다시 확인)
+- 켜 두면 최근 앱 화면 미리보기에도 대화가 보이지 않음 (Android 13+)
+
 ### 오류 기록
 - 앱이 죽거나 AI·첨부·링크 오류가 나면 기기에 기록 (API 키는 자동으로 가림, 최대 20만 자)
 - 설정 → 오류 기록에서 보기·복사·보내기·지우기
@@ -166,9 +181,10 @@ app/src/main/java/com/dskapp/
 │  │  ├─ ChatWireModels.kt       요청/응답 직렬화 모델
 │  │  ├─ AiModels.kt             AiMessage, AiError, ProviderConfig
 │  │  └─ Prompts.kt              시스템 프롬프트 / 추천 질문
-│  ├─ chat/                      Room v2: 대화(모델·요약) + 메시지(토큰), 첨부 JSON, v1→v2 마이그레이션
+│  ├─ chat/                      Room v3: 대화(모델·요약) + 메시지(토큰·생각 과정·즐겨찾기), 마이그레이션 1→2→3
 │  ├─ attachment/                AttachmentStore, TextDecoding, DocumentImporter(docx/pptx/pdf)
 │  ├─ backup/                    BackupService (.zip 백업·복원), BackupCodec
+│  ├─ schedule/                  예약 작업: 저장·시각 계산·알람·JobService·알림·실행기
 │  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
 │  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
 │  └─ settings/                  SettingsRepository, KeystoreCipher (API 키 암호화)

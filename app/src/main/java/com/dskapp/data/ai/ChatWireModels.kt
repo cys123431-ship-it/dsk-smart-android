@@ -107,7 +107,11 @@ internal data class ChatStreamChoice(
 @Serializable
 internal data class ChatStreamDelta(
     val role: String? = null,
-    val content: String? = null
+    val content: String? = null,
+    /** DeepSeek-style thinking stream. */
+    @SerialName("reasoning_content") val reasoningContent: String? = null,
+    /** OpenRouter-style thinking stream. */
+    val reasoning: String? = null
 )
 
 @Serializable

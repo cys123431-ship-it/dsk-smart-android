@@ -19,6 +19,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
@@ -72,7 +76,8 @@ fun MessageBubble(
     onRegenerate: () -> Unit = {},
     usageText: String? = null,
     isSpeaking: Boolean = false,
-    onSpeak: () -> Unit = {}
+    onSpeak: () -> Unit = {},
+    onToggleBookmark: () -> Unit = {}
 ) {
     if (message.isUser) {
         UserTurn(
@@ -90,7 +95,8 @@ fun MessageBubble(
             onRegenerate = onRegenerate,
             usageText = usageText,
             isSpeaking = isSpeaking,
-            onSpeak = onSpeak
+            onSpeak = onSpeak,
+            onToggleBookmark = onToggleBookmark
         )
     }
 }
@@ -182,7 +188,8 @@ private fun AssistantTurn(
     onRegenerate: () -> Unit,
     usageText: String?,
     isSpeaking: Boolean,
-    onSpeak: () -> Unit
+    onSpeak: () -> Unit,
+    onToggleBookmark: () -> Unit
 ) {
     Row(modifier = modifier.fillMaxWidth()) {
         // Small brand avatar, like ChatGPT's logo column.
@@ -204,7 +211,17 @@ private fun AssistantTurn(
         Spacer(Modifier.width(10.dp))
 
         Column(modifier = Modifier.weight(1f)) {
+            if (!message.reasoning.isNullOrBlank()) {
+                ReasoningBlock(
+                    messageId = message.id,
+                    reasoning = message.reasoning,
+                    isStreaming = message.isThinking
+                )
+            }
+
             when {
+                message.isThinking && !message.reasoning.isNullOrBlank() -> Unit
+
                 message.isThinking -> Text(
                     text = "생각하는 중…",
                     style = MaterialTheme.typography.bodyMedium,
@@ -235,6 +252,13 @@ private fun AssistantTurn(
                             onClick = onSpeak
                         )
                     }
+                    if (message.id > 0 && !message.isError) {
+                        ActionIcon(
+                            icon = if (message.isBookmarked) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                            contentDescription = if (message.isBookmarked) "즐겨찾기 해제" else "즐겨찾기",
+                            onClick = onToggleBookmark
+                        )
+                    }
                     if (canRegenerate) {
                         ActionIcon(
                             icon = Icons.Outlined.Refresh,
@@ -250,6 +274,47 @@ private fun AssistantTurn(
                             modifier = Modifier.padding(start = 4.dp)
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The model's thinking, folded by default so the answer stays in front. While it streams the
+ * header shows how much has arrived; tap to read it.
+ */
+@Composable
+private fun ReasoningBlock(messageId: Long, reasoning: String, isStreaming: Boolean) {
+    var expanded by rememberSaveable(messageId) { mutableStateOf(false) }
+    Surface(
+        onClick = { expanded = !expanded },
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.padding(bottom = 6.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (isStreaming) "💭 생각하는 중… (${reasoning.length}자)" else "💭 생각 과정 (${reasoning.length}자)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "생각 과정 접기" else "생각 과정 펼치기",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            if (expanded) {
+                SelectionContainer {
+                    Text(
+                        text = reasoning,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }

@@ -12,7 +12,9 @@ data class ChatMessage(
     val isError: Boolean = false,
     val isThinking: Boolean = false,
     val promptTokens: Int? = null,
-    val completionTokens: Int? = null
+    val completionTokens: Int? = null,
+    val reasoning: String? = null,
+    val isBookmarked: Boolean = false
 ) {
     /** A real assistant answer (not an error bubble or an empty placeholder). */
     val isExportable: Boolean

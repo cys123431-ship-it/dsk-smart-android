@@ -34,6 +34,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -64,7 +65,8 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenSchedule: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
@@ -232,6 +234,31 @@ fun SettingsScreen(
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
             LinkSection(autoReadLinks = state.autoReadLinks, onToggle = viewModel::setAutoReadLinks)
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "예약 작업", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "매일 정한 시각(한국 시간)에 AI에게 요청하고 결과를 알림으로 받아요.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedButton(onClick = onOpenSchedule) { Text("예약 작업 관리") }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Text(text = "앱 잠금", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("열 때 지문·얼굴·화면 잠금으로 확인", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = "1분 넘게 다른 앱에 있다가 돌아오면 다시 확인합니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = state.appLock, onCheckedChange = viewModel::setAppLock)
+            }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 

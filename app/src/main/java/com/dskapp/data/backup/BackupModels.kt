@@ -35,7 +35,9 @@ data class BackupMessage(
     val isError: Boolean = false,
     val promptTokens: Int? = null,
     val completionTokens: Int? = null,
-    val attachments: List<BackupAttachment> = emptyList()
+    val attachments: List<BackupAttachment> = emptyList(),
+    val reasoning: String? = null,
+    val isBookmarked: Boolean = false
 )
 
 /** [entry] is the file's name inside the zip's `files/` folder (e.g. `files/a1b2.png`). */

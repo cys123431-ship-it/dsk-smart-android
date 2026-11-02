@@ -63,6 +63,11 @@ object Prompts {
     const val CUSTOM_INSTRUCTIONS_HEADER =
         "The user's standing instructions (follow them unless the current request says otherwise):"
 
+    /** Scheduled runs have nobody to answer follow-up questions. */
+    const val SCHEDULED_HINT =
+        "This request runs automatically at a scheduled time and the user reads the answer later. " +
+            "Answer completely in one go; do not ask follow-up questions."
+
     /** Header for the running summary that replaces old turns of a long thread. */
     const val SUMMARY_HEADER =
         "Summary of the earlier part of this conversation (older messages are not repeated):"

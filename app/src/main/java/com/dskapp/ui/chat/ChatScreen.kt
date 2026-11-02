@@ -95,7 +95,9 @@ fun ChatScreen(
     onOpenSearch: () -> Unit,
     permanentDrawer: Boolean = false,
     startAction: StartAction? = null,
-    onStartActionHandled: () -> Unit = {}
+    onStartActionHandled: () -> Unit = {},
+    onOpenBookmarks: () -> Unit = {},
+    onOpenSchedule: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -239,7 +241,9 @@ fun ChatScreen(
                 onTogglePin = onTogglePin,
                 onOpenSettings = onOpenSettings,
                 onOpenSearch = onOpenSearch,
-                modifier = Modifier.width(300.dp)
+                modifier = Modifier.width(300.dp),
+                onOpenBookmarks = onOpenBookmarks,
+                onOpenSchedule = onOpenSchedule
             )
             chat(
                 null,
@@ -276,6 +280,14 @@ fun ChatScreen(
                     onOpenSearch = {
                         scope.launch { drawerState.close() }
                         onOpenSearch()
+                    },
+                    onOpenBookmarks = {
+                        scope.launch { drawerState.close() }
+                        onOpenBookmarks()
+                    },
+                    onOpenSchedule = {
+                        scope.launch { drawerState.close() }
+                        onOpenSchedule()
                     }
                 )
             }
@@ -426,6 +438,7 @@ internal fun ChatScaffold(
             onRegenerate = viewModel::regenerate,
             speakingId = speakingId,
             onSpeak = onSpeak,
+            onToggleBookmark = viewModel::toggleBookmark,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)

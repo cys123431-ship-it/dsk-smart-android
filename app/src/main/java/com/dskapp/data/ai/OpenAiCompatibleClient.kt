@@ -115,7 +115,8 @@ class OpenAiCompatibleClient(
         model: String?,
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
-        onUsage: (TokenUsage) -> Unit
+        onUsage: (TokenUsage) -> Unit,
+        onReasoning: (String) -> Unit
     ): Flow<Unit> = flow<Unit> {
         val config = configProvider()
         if (!config.isComplete) {
@@ -151,12 +152,12 @@ class OpenAiCompatibleClient(
                 }
             }
             try {
-                val retry = readStream(current.get(), includeUsage, onText, onError, reportUsage)
+                val retry = readStream(current.get(), includeUsage, onText, onError, reportUsage, onReasoning)
                 if (retry) {
                     streamUsageUnsupported = true
                     current.set(newCall(includeUsage = false))
                     currentCoroutineContext().ensureActive()
-                    readStream(current.get(), includeUsage = false, onText, onError, reportUsage)
+                    readStream(current.get(), includeUsage = false, onText, onError, reportUsage, onReasoning)
                 }
             } finally {
                 guard.cancel()
@@ -173,7 +174,8 @@ class OpenAiCompatibleClient(
         includeUsage: Boolean,
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
-        onUsage: (TokenUsage) -> Unit
+        onUsage: (TokenUsage) -> Unit,
+        onReasoning: (String) -> Unit
     ): Boolean {
         try {
             call.execute().use { okResponse ->
@@ -199,8 +201,12 @@ class OpenAiCompatibleClient(
                         ChatJson.decodeFromString(ChatStreamChunk.serializer(), payload)
                     }.getOrNull() ?: continue
 
-                    chunk.choices.firstOrNull()?.delta?.content?.let { delta ->
-                        if (delta.isNotEmpty()) onText(delta)
+                    val delta = chunk.choices.firstOrNull()?.delta
+                    (delta?.reasoningContent ?: delta?.reasoning)?.let { thought ->
+                        if (thought.isNotEmpty()) onReasoning(thought)
+                    }
+                    delta?.content?.let { text ->
+                        if (text.isNotEmpty()) onText(text)
                     }
                     // With include_usage the last chunk has empty choices and the totals.
                     chunk.usage?.let { onUsage(it.toTokenUsage()) }

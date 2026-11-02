@@ -18,6 +18,7 @@ import com.dskapp.data.chat.ChatRepository
 import com.dskapp.data.commands.CommandRepository
 import com.dskapp.data.commands.PromptCommand
 import com.dskapp.data.log.ErrorLog
+import com.dskapp.ui.lock.AppLock
 import com.dskapp.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +46,7 @@ data class SettingsUiState(
     val estimatedCostUsd: Double? = null,
     val isBackupRunning: Boolean = false,
     val autoReadLinks: Boolean = true,
+    val appLock: Boolean = false,
     val errorCount: Int = 0,
     val lastErrorTime: String? = null
 )
@@ -96,6 +98,7 @@ class SettingsViewModel(
                             themeMode = settings.themeMode,
                             fontScale = settings.fontScale,
                             autoReadLinks = settings.autoReadLinks,
+                            appLock = settings.appLock,
                             usage = usage,
                             estimatedCostUsd = settings.costUsd(
                                 usage.promptTokens,
@@ -267,6 +270,16 @@ class SettingsViewModel(
     fun resetCommands() = commandRepository.resetDefaults()
 
     fun setAutoReadLinks(enabled: Boolean) = repository.saveAutoReadLinks(enabled)
+
+    /** The lock needs a phone PIN / pattern / password to fall back on. */
+    fun setAppLock(enabled: Boolean) {
+        if (enabled && !AppLock.isDeviceSecure(appContext)) {
+            _uiState.update { it.copy(message = "휴대폰 화면 잠금(PIN·패턴·비밀번호)을 먼저 설정해 주세요.") }
+            return
+        }
+        repository.saveAppLock(enabled)
+        _uiState.update { it.copy(message = if (enabled) "앱 잠금을 켰습니다." else "앱 잠금을 껐습니다.") }
+    }
 
     fun readErrorLog(): String = ErrorLog.read()
 

@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -157,6 +158,9 @@ private fun BulletBlock(items: List<String>, ordered: Boolean) {
 @Composable
 private fun CodeBlock(code: String, language: String) {
     val clipboard = LocalClipboardManager.current
+    // Follows the app theme (also the manual dark mode), not only the system setting.
+    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val highlighted = remember(code, language, dark) { SyntaxHighlighter.highlight(code, language, dark) }
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -200,7 +204,7 @@ private fun CodeBlock(code: String, language: String) {
             ) {
                 SelectionContainer {
                     Text(
-                        text = code,
+                        text = highlighted,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 13.sp,
                         lineHeight = 19.sp,

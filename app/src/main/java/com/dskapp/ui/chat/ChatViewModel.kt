@@ -14,6 +14,7 @@ import com.dskapp.data.ai.AiMessage
 import com.dskapp.data.ai.AiResult
 import com.dskapp.data.ai.AiRole
 import com.dskapp.data.ai.Prompts
+import com.dskapp.data.ai.ThinkTags
 import com.dskapp.data.ai.TokenUsage
 import com.dskapp.data.ai.userMessage
 import com.dskapp.data.attachment.AttachmentStore
@@ -121,7 +122,9 @@ class ChatViewModel(
         attachments = AttachmentCodec.decode(attachmentsJson),
         isError = isError,
         promptTokens = promptTokens,
-        completionTokens = completionTokens
+        completionTokens = completionTokens,
+        reasoning = reasoning,
+        isBookmarked = isBookmarked
     )
 
     // ---------------------------------------------------------------- input state
@@ -136,6 +139,14 @@ class ChatViewModel(
 
     fun consumeBanner() {
         _uiState.update { it.copy(banner = null) }
+    }
+
+    /** Stars or un-stars an answer for the 즐겨찾기 list. */
+    fun toggleBookmark(messageId: Long) {
+        val message = _uiState.value.messages.firstOrNull { it.id == messageId && it.id > 0 } ?: return
+        viewModelScope.launch {
+            runCatching { chatRepository.setBookmarked(messageId, !message.isBookmarked) }
+        }
     }
 
     /** Picks the model for this thread only; null or the default model clears the override. */
@@ -345,8 +356,26 @@ class ChatViewModel(
         val system = buildSystemPrompt(context.summary, photoAttached)
 
         val builder = StringBuilder()
+        val thoughts = StringBuilder()
         var failed = false
         var usage: TokenUsage? = null
+
+        // Shows the streamed answer and thinking so far; inline <think> blocks are split off.
+        fun render() {
+            val (raw, streamed) = synchronized(builder) { builder.toString() to thoughts.toString() }
+            val (answer, reasoning) = splitReasoning(raw, streamed)
+            _uiState.update { current ->
+                current.copy(
+                    messages = current.messages.map { message ->
+                        if (message.id == placeholderId) {
+                            message.copy(content = answer, reasoning = reasoning, isThinking = answer.isEmpty())
+                        } else {
+                            message
+                        }
+                    }
+                )
+            }
+        }
 
         val job = viewModelScope.launch {
             aiClient.stream(
@@ -354,18 +383,12 @@ class ChatViewModel(
                 messages = context.messages,
                 model = model,
                 onText = { delta ->
-                    val snapshot = synchronized(builder) { builder.append(delta).toString() }
-                    _uiState.update { current ->
-                        current.copy(
-                            messages = current.messages.map { message ->
-                                if (message.id == placeholderId) {
-                                    message.copy(content = snapshot, isThinking = false)
-                                } else {
-                                    message
-                                }
-                            }
-                        )
-                    }
+                    synchronized(builder) { builder.append(delta) }
+                    render()
+                },
+                onReasoning = { delta ->
+                    synchronized(builder) { thoughts.append(delta) }
+                    render()
                 },
                 onError = { error ->
                     failed = true
@@ -383,8 +406,9 @@ class ChatViewModel(
             job.join()
         } finally {
             withContext(NonCancellable) {
-                val finalText = synchronized(builder) { builder.toString() }.trim()
-                finishAnswer(placeholderId, finalText, failed, stopped = job.isCancelled, usage = usage)
+                val (raw, streamed) = synchronized(builder) { builder.toString() to thoughts.toString() }
+                val (answer, reasoning) = splitReasoning(raw, streamed)
+                finishAnswer(placeholderId, answer.trim(), failed, stopped = job.isCancelled, usage = usage, reasoning = reasoning)
                 if (streamJob === job) streamJob = null
             }
         }
@@ -399,7 +423,8 @@ class ChatViewModel(
         finalText: String,
         failed: Boolean,
         stopped: Boolean,
-        usage: TokenUsage?
+        usage: TokenUsage?,
+        reasoning: String?
     ) {
         val hasAnswer = finalText.isNotEmpty()
         val content = when {
@@ -418,7 +443,8 @@ class ChatViewModel(
                     content = it,
                     isError = !hasAnswer,
                     promptTokens = usage?.promptTokens,
-                    completionTokens = usage?.completionTokens
+                    completionTokens = usage?.completionTokens,
+                    reasoning = reasoning
                 )
             }.getOrNull()
         }
@@ -437,11 +463,21 @@ class ChatViewModel(
                     content = content,
                     isError = !hasAnswer,
                     promptTokens = usage?.promptTokens,
-                    completionTokens = usage?.completionTokens
+                    completionTokens = usage?.completionTokens,
+                    reasoning = reasoning
                 )
             }
             current.copy(isSending = false, messages = messages)
         }
+    }
+
+    /** (answer, reasoning): streamed thinking plus any inline <think> block. */
+    private fun splitReasoning(raw: String, streamed: String): Pair<String, String?> {
+        val (inline, answer) = ThinkTags.split(raw)
+        val reasoning = listOfNotNull(streamed.trim().ifEmpty { null }, inline?.ifEmpty { null })
+            .joinToString("\n\n")
+            .ifEmpty { null }
+        return answer to reasoning
     }
 
     private fun buildSystemPrompt(summary: String?, photoAttached: Boolean): String = buildString {

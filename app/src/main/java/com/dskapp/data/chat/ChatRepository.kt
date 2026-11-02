@@ -35,7 +35,8 @@ class ChatRepository(private val dao: ChatDao) {
         attachmentsJson: String = "[]",
         isError: Boolean = false,
         promptTokens: Int? = null,
-        completionTokens: Int? = null
+        completionTokens: Int? = null,
+        reasoning: String? = null
     ): Long {
         val now = System.currentTimeMillis()
         val id = dao.insertMessage(
@@ -47,7 +48,8 @@ class ChatRepository(private val dao: ChatDao) {
                 attachmentsJson = attachmentsJson,
                 isError = isError,
                 promptTokens = promptTokens,
-                completionTokens = completionTokens
+                completionTokens = completionTokens,
+                reasoning = reasoning?.takeIf { it.isNotBlank() }
             )
         )
         dao.touchConversation(conversationId, now)
@@ -80,6 +82,10 @@ class ChatRepository(private val dao: ChatDao) {
     }
 
     suspend fun setPinned(id: Long, pinned: Boolean) = dao.setPinned(id, pinned)
+
+    suspend fun setBookmarked(messageId: Long, bookmarked: Boolean) = dao.setBookmarked(messageId, bookmarked)
+
+    fun observeBookmarks(): Flow<List<BookmarkItem>> = dao.observeBookmarks()
 
     suspend fun setModel(id: Long, model: String?) = dao.setModel(id, model?.takeIf { it.isNotBlank() })
 
@@ -139,7 +145,7 @@ class ChatRepository(private val dao: ChatDao) {
                 context.applicationContext,
                 ChatDatabase::class.java,
                 ChatDatabase.NAME
-            ).addMigrations(ChatDatabase.MIGRATION_1_2).build()
+            ).addMigrations(ChatDatabase.MIGRATION_1_2, ChatDatabase.MIGRATION_2_3).build()
             return ChatRepository(db.chatDao())
         }
     }

@@ -42,6 +42,7 @@ fun ChatContent(
     onRegenerate: () -> Unit,
     speakingId: Long? = null,
     onSpeak: (ChatMessage) -> Unit = {},
+    onToggleBookmark: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -77,7 +78,8 @@ fun ChatContent(
                         onRegenerate = onRegenerate,
                         usageText = usageText(message),
                         isSpeaking = message.id == speakingId,
-                        onSpeak = { onSpeak(message) }
+                        onSpeak = { onSpeak(message) },
+                        onToggleBookmark = { onToggleBookmark(message.id) }
                     )
                 }
             }
