@@ -1,16 +1,23 @@
 package com.dskapp.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -73,7 +80,15 @@ fun ChatComposer(
         color = MaterialTheme.colorScheme.background,
         modifier = modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(
+            modifier = Modifier
+                // Navigation bar or keyboard, whichever is taller; the Surface colour still
+                // fills the area behind them.
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
+                )
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
             PendingAttachments(pendingAttachments, onRemoveAttachment)
             ComposerRow(
                 value = value,
@@ -110,9 +125,11 @@ private fun PendingAttachments(
 ) {
     if (attachments.isEmpty()) return
 
+    // Scrolls sideways: a PDF can add several page images at once.
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .padding(bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -212,7 +229,7 @@ private fun ComposerRow(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("파일 (텍스트)") },
+                        text = { Text("파일 (PDF·Word·PPT·텍스트)") },
                         onClick = {
                             menuExpanded = false
                             onPickFile()

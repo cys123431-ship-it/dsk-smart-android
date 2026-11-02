@@ -8,15 +8,9 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.union
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.settings.SettingsRepository.ThemeMode
 import com.dskapp.di.ServiceLocator
@@ -53,12 +47,10 @@ class MainActivity : ComponentActivity() {
             }
 
             DskTheme(darkTheme = darkTheme, fontScale = appSettings.fontScale) {
-                Surface(
-                    // Compose handles IME + system bar insets so the composer stays above
-                    // the keyboard on both phones and tablets.
-                    modifier = Modifier
-                        .consumeWindowInsets(WindowInsets.systemBars.union(WindowInsets.ime))
-                ) {
+                // Edge-to-edge: each screen pads itself for the status bar, navigation bar and
+                // keyboard (top bars, the composer, drawers). Consuming the insets here without
+                // padding made every bar draw underneath the system bars.
+                Surface {
                     DskAppNavHost()
                 }
             }
