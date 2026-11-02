@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -80,6 +81,8 @@ fun ChatComposer(
     onToggleVoice: () -> Unit,
     commands: List<PromptCommand> = emptyList(),
     onCommand: (PromptCommand) -> Unit = {},
+    agentMode: Boolean = false,
+    onToggleAgent: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -95,7 +98,16 @@ fun ChatComposer(
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            if (commands.isNotEmpty() && !isSending) CommandChips(commands, onCommand)
+            if (agentMode) {
+                // Makes it obvious that sending now lets the AI operate the phone.
+                AssistChip(
+                    onClick = onToggleAgent,
+                    label = { Text("📱 폰 조작 모드 · 보내면 AI가 폰을 직접 조작합니다 (눌러서 끄기)") },
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            } else if (commands.isNotEmpty() && !isSending) {
+                CommandChips(commands, onCommand)
+            }
             PendingAttachments(pendingAttachments, onRemoveAttachment)
             ComposerRow(
                 value = value,
@@ -109,7 +121,8 @@ fun ChatComposer(
                 isImporting = isImporting,
                 canSend = canSend,
                 isListening = isListening,
-                onToggleVoice = onToggleVoice
+                onToggleVoice = onToggleVoice,
+                onToggleAgent = onToggleAgent
             )
 
             Text(
@@ -201,7 +214,8 @@ private fun ComposerRow(
     isImporting: Boolean,
     canSend: Boolean,
     isListening: Boolean,
-    onToggleVoice: () -> Unit
+    onToggleVoice: () -> Unit,
+    onToggleAgent: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -258,6 +272,13 @@ private fun ComposerRow(
                         onClick = {
                             menuExpanded = false
                             onPickFile()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("📱 폰 조작 모드") },
+                        onClick = {
+                            menuExpanded = false
+                            onToggleAgent()
                         }
                     )
                 }

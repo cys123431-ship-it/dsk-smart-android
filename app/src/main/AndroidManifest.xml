@@ -23,6 +23,10 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -81,6 +85,21 @@
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <!-- Phone agent ("스마트폰 유즈"): reads the screen and taps/types for the user once they
+             switch it on in Android's accessibility settings. -->
+        <service
+            android:name=".agent.DskAccessibilityService"
+            android:exported="false"
+            android:label="@string/agent_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/agent_accessibility_service" />
+        </service>
 
         <service
             android:name=".data.schedule.ScheduledTaskJob"

@@ -426,7 +426,9 @@ internal fun ChatScaffold(
                 isListening = isListening,
                 onToggleVoice = onToggleVoice,
                 commands = commands,
-                onCommand = onCommand
+                onCommand = onCommand,
+                agentMode = state.agentMode,
+                onToggleAgent = viewModel::toggleAgentMode
             )
         }
     ) { padding ->

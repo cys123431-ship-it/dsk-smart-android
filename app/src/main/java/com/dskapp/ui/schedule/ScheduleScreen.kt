@@ -358,6 +358,7 @@ private fun TaskEditorDialog(
         mutableStateOf(initial?.days ?: ScheduledTask.ALL_DAYS)
     }
     var model by remember { mutableStateOf(initial?.model) }
+    var usePhone by remember { mutableStateOf(initial?.usePhoneAgent ?: false) }
     var showTimePicker by remember { mutableStateOf(false) }
     var modelMenuOpen by remember { mutableStateOf(false) }
 
@@ -451,6 +452,18 @@ private fun TaskEditorDialog(
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("📱 폰 조작으로 실행", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "앱 열기·스크롤·읽기만 합니다 (누르기·입력 없음). 그 시각에 화면이 잠겨 있으면 실행하지 못해요.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = usePhone, onCheckedChange = { usePhone = it })
+                }
             }
         },
         confirmButton = {
@@ -466,6 +479,7 @@ private fun TaskEditorDialog(
                             minute = minute,
                             days = days,
                             model = model,
+                            usePhoneAgent = usePhone,
                         )
                     } else {
                         base.copy(
@@ -475,6 +489,7 @@ private fun TaskEditorDialog(
                             minute = minute,
                             days = days,
                             model = model,
+                            usePhoneAgent = usePhone,
                         )
                     }
                     onSave(result)

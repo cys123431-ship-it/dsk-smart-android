@@ -36,7 +36,9 @@ data class ChatUiState(
     /** This thread's model override; null uses [defaultModel]. */
     val threadModel: String? = null,
     val defaultModel: String = "",
-    val knownModels: List<String> = emptyList()
+    val knownModels: List<String> = emptyList(),
+    /** The next message is a phone-agent goal instead of a chat question. */
+    val agentMode: Boolean = false
 ) {
     val canSend: Boolean
         get() = !isSending && (input.isNotBlank() || pendingAttachments.isNotEmpty())

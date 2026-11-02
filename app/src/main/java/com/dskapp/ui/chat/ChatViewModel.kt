@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.dskapp.agent.AgentBridge
 import com.dskapp.data.ai.AiClient
 import com.dskapp.data.ai.AiImage
 import com.dskapp.data.ai.AiMessage
@@ -240,6 +241,11 @@ class ChatViewModel(
         val attachments = state.pendingAttachments
         val isFirstMessage = state.messages.isEmpty()
 
+        if (state.agentMode) {
+            startAgent(text, isFirstMessage)
+            return
+        }
+
         _uiState.update { it.copy(input = "", pendingAttachments = emptyList(), isSending = true) }
 
         viewModelScope.launch {
@@ -252,6 +258,32 @@ class ChatViewModel(
             }
             streamAnswer(photoAttached = attachments.any { it.kind == AttachmentKind.IMAGE })
             if (isFirstMessage) generateTitle(text)
+        }
+    }
+
+    fun toggleAgentMode() {
+        _uiState.update { it.copy(agentMode = !it.agentMode) }
+    }
+
+    /**
+     * Hands [goal] to the phone agent. The run happens in the accessibility service while
+     * other apps are in front; its record arrives in this thread when it ends.
+     */
+    private fun startAgent(goal: String, isFirstMessage: Boolean) {
+        if (goal.isBlank()) return
+        if (!AgentBridge.isEnabled) {
+            _uiState.update { it.copy(banner = "설정 > 폰 조작에서 접근성 권한을 먼저 켜 주세요.") }
+            return
+        }
+        _uiState.update { it.copy(input = "", agentMode = false) }
+        viewModelScope.launch {
+            if (!persistUserTurn("📱 $goal", emptyList())) return@launch
+            val started = AgentBridge.start(appContext, goal, conversationId, _uiState.value.threadModel)
+            if (!started) {
+                _uiState.update { it.copy(input = goal, agentMode = true, banner = "이미 폰 조작이 진행 중입니다.") }
+            } else if (isFirstMessage) {
+                generateTitle(goal)
+            }
         }
     }
 

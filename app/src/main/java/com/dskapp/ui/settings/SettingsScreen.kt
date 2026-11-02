@@ -247,6 +247,19 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
+            AgentSection(
+                level = state.agentLevel,
+                maxSteps = state.agentMaxSteps,
+                screenshots = state.agentScreenshots,
+                allowedText = state.agentAllowedText,
+                onLevel = viewModel::setAgentLevel,
+                onMaxSteps = viewModel::setAgentMaxSteps,
+                onScreenshots = viewModel::setAgentScreenshots,
+                onSaveAllowed = viewModel::saveAgentAllowed
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
             Text(text = "앱 잠금", style = MaterialTheme.typography.titleMedium)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {

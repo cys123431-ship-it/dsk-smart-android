@@ -47,7 +47,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Slider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.dskapp.agent.AgentBridge
+import com.dskapp.agent.AgentLevel
 import com.dskapp.data.commands.CommandApplier
+import kotlin.math.roundToInt
 import com.dskapp.data.commands.PromptCommand
 import kotlinx.coroutines.launch
 
@@ -388,4 +398,103 @@ fun ErrorLogSection(
             }
         )
     }
+}
+
+/** Phone agent ("스마트폰 유즈") switches: accessibility status, level, steps, screenshots, allow-list. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun AgentSection(
+    level: AgentLevel,
+    maxSteps: Int,
+    screenshots: Boolean,
+    allowedText: String,
+    onLevel: (AgentLevel) -> Unit,
+    onMaxSteps: (Int) -> Unit,
+    onScreenshots: (Boolean) -> Unit,
+    onSaveAllowed: (String) -> Unit
+) {
+    val context = LocalContext.current
+    var refresh by remember { mutableStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh++ }
+    val enabled = remember(refresh) { AgentBridge.isEnabled }
+    var steps by remember(maxSteps) { mutableStateOf(maxSteps.toFloat()) }
+    var allowed by rememberSaveable(allowedText) { mutableStateOf(allowedText) }
+
+    Text("폰 조작 (스마트폰 유즈)", style = MaterialTheme.typography.titleMedium)
+    Text(
+        text = if (enabled) "켜짐 · 채팅의 + 메뉴 > 폰 조작 모드로 요청하세요." else "꺼짐 · 접근성 설정에서 'DSK 스마트 폰 조작'을 켜야 합니다.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+    )
+    Text(
+        "보내기·결제·삭제 같은 동작은 실행 전에 확인을 받고, 은행·결제 앱과 비밀번호 칸은 조작하지 않습니다. " +
+            "화면 위 '중지' 버튼으로 언제든 멈출 수 있어요. 접근성 버튼을 누르면 지금 화면을 요약합니다.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { runCatching { context.startActivity(AgentBridge.accessibilitySettingsIntent()) } }) {
+            Text("접근성 설정 열기")
+        }
+        TextButton(onClick = {
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + context.packageName))
+                )
+            }
+        }) { Text("앱 정보 (제한된 설정 허용)") }
+    }
+    Text(
+        "Android 13 이상에서 접근성을 켤 수 없다고 나오면: 앱 정보 > 오른쪽 위 ⋮ > '제한된 설정 허용'을 누른 뒤 다시 켜 주세요.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    Text("허용 수준", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        AgentLevel.entries.forEach { option ->
+            FilterChip(selected = level == option, onClick = { onLevel(option) }, label = { Text(option.label) })
+        }
+    }
+    Text(
+        when (level) {
+            AgentLevel.READ -> "화면을 읽고 설명만 합니다."
+            AgentLevel.NAVIGATE -> "앱 열기·스크롤·뒤로 가기까지 합니다. 누르거나 입력하지 않습니다."
+            AgentLevel.CONTROL -> "누르기·입력까지 합니다. 되돌릴 수 없는 동작은 확인을 받습니다."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    Text("최대 단계 ${steps.roundToInt()}번", style = MaterialTheme.typography.bodySmall)
+    Slider(
+        value = steps,
+        onValueChange = { steps = it },
+        onValueChangeFinished = { onMaxSteps(steps.roundToInt()) },
+        valueRange = 5f..40f,
+        steps = 6
+    )
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("그림뿐인 화면은 스크린샷도 보내기", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "지도·게임처럼 글자가 거의 없는 화면에서만 사용 (이미지를 읽는 모델 필요, Android 11+)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = screenshots, onCheckedChange = onScreenshots)
+    }
+
+    OutlinedTextField(
+        value = allowed,
+        onValueChange = { allowed = it },
+        label = { Text("예외로 허용할 앱 패키지 (줄마다 하나)") },
+        placeholder = { Text("com.example.app") },
+        minLines = 2,
+        maxLines = 4,
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedButton(onClick = { onSaveAllowed(allowed) }) { Text("허용 목록 저장") }
 }

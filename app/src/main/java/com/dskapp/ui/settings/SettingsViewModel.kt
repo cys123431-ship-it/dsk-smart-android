@@ -18,6 +18,7 @@ import com.dskapp.data.chat.ChatRepository
 import com.dskapp.data.commands.CommandRepository
 import com.dskapp.data.commands.PromptCommand
 import com.dskapp.data.log.ErrorLog
+import com.dskapp.agent.AgentLevel
 import com.dskapp.ui.lock.AppLock
 import com.dskapp.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,6 +48,10 @@ data class SettingsUiState(
     val isBackupRunning: Boolean = false,
     val autoReadLinks: Boolean = true,
     val appLock: Boolean = false,
+    val agentLevel: AgentLevel = AgentLevel.CONTROL,
+    val agentMaxSteps: Int = 25,
+    val agentScreenshots: Boolean = false,
+    val agentAllowedText: String = "",
     val errorCount: Int = 0,
     val lastErrorTime: String? = null
 )
@@ -99,6 +104,10 @@ class SettingsViewModel(
                             fontScale = settings.fontScale,
                             autoReadLinks = settings.autoReadLinks,
                             appLock = settings.appLock,
+                            agentLevel = settings.agentLevel,
+                            agentMaxSteps = settings.agentMaxSteps,
+                            agentScreenshots = settings.agentScreenshots,
+                            agentAllowedText = settings.agentAllowed.sorted().joinToString("\n"),
                             usage = usage,
                             estimatedCostUsd = settings.costUsd(
                                 usage.promptTokens,
@@ -270,6 +279,16 @@ class SettingsViewModel(
     fun resetCommands() = commandRepository.resetDefaults()
 
     fun setAutoReadLinks(enabled: Boolean) = repository.saveAutoReadLinks(enabled)
+
+    fun setAgentLevel(level: AgentLevel) = repository.saveAgentLevel(level)
+    fun setAgentMaxSteps(steps: Int) = repository.saveAgentMaxSteps(steps)
+    fun setAgentScreenshots(enabled: Boolean) = repository.saveAgentScreenshots(enabled)
+
+    fun saveAgentAllowed(text: String) {
+        val packages = text.split('\n', ',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        repository.saveAgentAllowed(packages)
+        _uiState.update { it.copy(message = "허용 목록을 저장했습니다 (${packages.size}개).") }
+    }
 
     /** The lock needs a phone PIN / pattern / password to fall back on. */
     fun setAppLock(enabled: Boolean) {

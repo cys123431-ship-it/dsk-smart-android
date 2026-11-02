@@ -20,7 +20,9 @@ data class ScheduledTask(
     val enabled: Boolean = true,
     val conversationId: Long? = null,
     val lastRunAt: Long? = null,
-    val lastError: String? = null  // null after a successful run
+    val lastError: String? = null, // null after a successful run
+    /** Run through the phone agent (open apps, scroll, read only) instead of a plain AI request. */
+    val usePhoneAgent: Boolean = false
 ) {
     companion object {
         val ALL_DAYS: Set<Int> = (1..7).toSet()

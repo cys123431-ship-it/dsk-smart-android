@@ -1,6 +1,7 @@
 package com.dskapp.data.schedule
 
 import android.content.Context
+import com.dskapp.agent.AgentBridge
 import com.dskapp.data.ai.AiMessage
 import com.dskapp.data.ai.AiResult
 import com.dskapp.data.ai.AiRole
@@ -37,6 +38,22 @@ object ScheduledTaskRunner {
         val existing = task.conversationId?.let { chats.conversation(it) }
         val conversationId = existing?.id ?: chats.createConversation("⏰ ${task.name}")
         if (existing == null) schedule.markRun(task.id, task.lastRunAt ?: 0L, task.lastError, conversationId)
+
+        if (task.usePhoneAgent) {
+            chats.appendMessage(conversationId, ChatViewModel.ROLE_USER, "📱 ${task.prompt}")
+            val record = AgentBridge.runUnattended(appContext, task.prompt, task.model ?: existing?.model)
+                .getOrElse { error ->
+                    chats.appendMessage(
+                        conversationId = conversationId,
+                        role = ChatViewModel.ROLE_ASSISTANT,
+                        content = "예약 실행 실패: ${error.message}",
+                        isError = true
+                    )
+                    throw error
+                }
+            chats.appendMessage(conversationId, ChatViewModel.ROLE_ASSISTANT, record)
+            return@runCatching RunOutcome(conversationId, record)
+        }
 
         val links = readLinks(appContext, task.prompt)
         chats.appendMessage(

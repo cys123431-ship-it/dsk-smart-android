@@ -3,6 +3,7 @@ package com.dskapp.data.settings
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import com.dskapp.agent.AgentLevel
 import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.ai.ProviderConfig
 import com.dskapp.data.ai.TokenUsage
@@ -110,6 +111,27 @@ class SettingsRepository(context: Context) {
         refresh()
     }
 
+    fun saveAgentLevel(level: AgentLevel) {
+        prefs.edit { putString(KEY_AGENT_LEVEL, level.name) }
+        refresh()
+    }
+
+    fun saveAgentMaxSteps(steps: Int) {
+        prefs.edit { putInt(KEY_AGENT_MAX_STEPS, steps.coerceIn(MIN_AGENT_STEPS, MAX_AGENT_STEPS)) }
+        refresh()
+    }
+
+    fun saveAgentScreenshots(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_AGENT_SCREENSHOTS, enabled) }
+        refresh()
+    }
+
+    /** Package names the agent may operate even though they look like banking/payment apps. */
+    fun saveAgentAllowed(packages: Set<String>) {
+        prefs.edit { putStringSet(KEY_AGENT_ALLOWED, packages) }
+        refresh()
+    }
+
     fun saveAppLock(enabled: Boolean) {
         prefs.edit { putBoolean(KEY_APP_LOCK, enabled) }
         refresh()
@@ -190,7 +212,13 @@ class SettingsRepository(context: Context) {
                 ?.getFloat(KEY_PRICE_OUT, 0f)?.toDouble(),
             knownModels = knownModels,
             autoReadLinks = prefs.getBoolean(KEY_AUTO_READ_LINKS, true),
-            appLock = prefs.getBoolean(KEY_APP_LOCK, false)
+            appLock = prefs.getBoolean(KEY_APP_LOCK, false),
+            agentLevel = prefs.getString(KEY_AGENT_LEVEL, null)
+                ?.let { name -> AgentLevel.entries.firstOrNull { it.name == name } }
+                ?: AgentLevel.CONTROL,
+            agentMaxSteps = prefs.getInt(KEY_AGENT_MAX_STEPS, DEFAULT_AGENT_STEPS),
+            agentScreenshots = prefs.getBoolean(KEY_AGENT_SCREENSHOTS, false),
+            agentAllowed = prefs.getStringSet(KEY_AGENT_ALLOWED, null).orEmpty().toSet()
         )
     }
 
@@ -236,7 +264,13 @@ class SettingsRepository(context: Context) {
         /** Fetch web pages for URLs in a sent message and attach their text. */
         val autoReadLinks: Boolean = true,
         /** Ask for fingerprint / face / screen lock when the app is opened. */
-        val appLock: Boolean = false
+        val appLock: Boolean = false,
+        /** Phone agent: how far it may go, how many steps, extra screenshot input, allow-list. */
+        val agentLevel: AgentLevel = AgentLevel.CONTROL,
+        val agentMaxSteps: Int = DEFAULT_AGENT_STEPS,
+        val agentScreenshots: Boolean = false,
+        val agentAllowed: Set<String> = emptySet(),
+        val agentBlocked: Set<String> = emptySet()
     ) {
         val isConfigured: Boolean get() = hasApiKey && baseUrl.isNotBlank() && model.isNotBlank()
 
@@ -255,6 +289,9 @@ class SettingsRepository(context: Context) {
     companion object {
         const val MIN_FONT_SCALE = 0.85f
         const val MAX_FONT_SCALE = 1.4f
+        const val MIN_AGENT_STEPS = 5
+        const val MAX_AGENT_STEPS = 40
+        const val DEFAULT_AGENT_STEPS = 25
 
         private const val PREFS_FILE = "dsk_settings"
         private const val KEY_BASE_URL = "provider_base_url"
@@ -269,6 +306,10 @@ class SettingsRepository(context: Context) {
         private const val KEY_KNOWN_MODELS = "known_models"
         private const val KEY_AUTO_READ_LINKS = "auto_read_links"
         private const val KEY_APP_LOCK = "app_lock"
+        private const val KEY_AGENT_LEVEL = "agent_level"
+        private const val KEY_AGENT_MAX_STEPS = "agent_max_steps"
+        private const val KEY_AGENT_SCREENSHOTS = "agent_screenshots"
+        private const val KEY_AGENT_ALLOWED = "agent_allowed"
         private const val KEY_USAGE_MONTH = "usage_month"
         private const val KEY_USAGE_IN = "usage_prompt_tokens"
         private const val KEY_USAGE_OUT = "usage_completion_tokens"
