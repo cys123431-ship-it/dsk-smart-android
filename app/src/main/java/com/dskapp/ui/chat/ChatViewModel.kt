@@ -24,7 +24,11 @@ import com.dskapp.data.chat.AttachmentKind
 import com.dskapp.data.chat.ChatRepository
 import com.dskapp.data.chat.MessageEntity
 import com.dskapp.data.image.ImageProcessor
+import com.dskapp.data.link.LinkReader
+import com.dskapp.data.link.UrlFinder
+import com.dskapp.data.log.ErrorLog
 import com.dskapp.data.settings.SettingsRepository
+import com.dskapp.di.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -51,7 +55,8 @@ class ChatViewModel(
     private val conversationId: Long,
     private val chatRepository: ChatRepository,
     private val settingsRepository: SettingsRepository,
-    private val aiClient: AiClient
+    private val aiClient: AiClient,
+    private val linkReader: LinkReader
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -180,6 +185,7 @@ class ChatViewModel(
                         )
                     },
                     onFailure = { error ->
+                        ErrorLog.record("attach", error.message ?: "파일을 읽지 못했습니다.", error)
                         state.copy(
                             isImporting = false,
                             banner = error.message ?: "파일을 읽지 못했습니다."
@@ -226,7 +232,8 @@ class ChatViewModel(
         _uiState.update { it.copy(input = "", pendingAttachments = emptyList(), isSending = true) }
 
         viewModelScope.launch {
-            if (!persistUserTurn(text, attachments)) {
+            val withLinks = attachments + readLinks(text)
+            if (!persistUserTurn(text, withLinks)) {
                 _uiState.update {
                     it.copy(input = text, pendingAttachments = attachments, banner = "이 대화가 삭제되어 보낼 수 없습니다.")
                 }
@@ -235,6 +242,34 @@ class ChatViewModel(
             streamAnswer(photoAttached = attachments.any { it.kind == AttachmentKind.IMAGE })
             if (isFirstMessage) generateTitle(text)
         }
+    }
+
+    /**
+     * Fetches the pages behind URLs in [text] and turns each into a text attachment
+     * ("🔗 title"), so the answer can use the page and the resend window treats it like a
+     * file. A link that cannot be read is reported but never blocks the message.
+     */
+    private suspend fun readLinks(text: String): List<Attachment> {
+        if (!settingsRepository.state.value.autoReadLinks) return emptyList()
+        val urls = UrlFinder.find(text, max = MAX_LINKS)
+        if (urls.isEmpty()) return emptyList()
+
+        _uiState.update { it.copy(isImporting = true) }
+        val attachments = urls.mapNotNull { url ->
+            linkReader.read(url).fold(
+                onSuccess = { page ->
+                    val name = "🔗 " + (page.title ?: page.url.substringAfter("://").substringBefore('/'))
+                    AttachmentStore.saveText(appContext, name.take(60), "출처: ${page.url}\n\n${page.text}")
+                },
+                onFailure = { error ->
+                    ErrorLog.record("link", "$url: ${error.message}", error)
+                    _uiState.update { it.copy(banner = "링크를 읽지 못했습니다: ${error.message}") }
+                    null
+                }
+            )
+        }
+        _uiState.update { it.copy(isImporting = false) }
+        return attachments
     }
 
     /** Throws away the last answer and asks again with the same history. */
@@ -334,6 +369,7 @@ class ChatViewModel(
                 },
                 onError = { error ->
                     failed = true
+                    ErrorLog.record("chat", "${error::class.simpleName}: ${error.userMessage}")
                     _uiState.update { it.copy(banner = error.userMessage) }
                 },
                 onUsage = { usage = it }
@@ -575,6 +611,9 @@ class ChatViewModel(
         /** Messages kept verbatim after a fold, so the latest turns stay exact. */
         private const val KEEP_AFTER_SUMMARY = 10
 
+        /** Links read per message; more would mostly add tokens, not answers. */
+        private const val MAX_LINKS = 3
+
         /** Only the latest messages resend their photos/files (about the last two turns). */
         private const val ATTACHMENT_WINDOW_MESSAGES = 4
 
@@ -594,7 +633,8 @@ class ChatViewModel(
                     conversationId = conversationId,
                     chatRepository = chatRepository,
                     settingsRepository = settingsRepository,
-                    aiClient = aiClient
+                    aiClient = aiClient,
+                    linkReader = ServiceLocator.links()
                 )
             }
         }

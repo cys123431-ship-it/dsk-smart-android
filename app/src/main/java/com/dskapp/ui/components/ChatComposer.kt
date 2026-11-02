@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +35,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -48,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.dskapp.data.chat.Attachment
+import com.dskapp.data.commands.PromptCommand
 
 private const val MAX_INPUT_LINES = 6
 
@@ -74,6 +78,8 @@ fun ChatComposer(
     canSend: Boolean,
     isListening: Boolean,
     onToggleVoice: () -> Unit,
+    commands: List<PromptCommand> = emptyList(),
+    onCommand: (PromptCommand) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -89,6 +95,7 @@ fun ChatComposer(
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
+            if (commands.isNotEmpty() && !isSending) CommandChips(commands, onCommand)
             PendingAttachments(pendingAttachments, onRemoveAttachment)
             ComposerRow(
                 value = value,
@@ -113,6 +120,24 @@ fun ChatComposer(
                     .fillMaxWidth()
                     .padding(top = 6.dp),
                 textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/** One-tap saved requests ("영어로 번역", "3줄 요약"...), editable in Settings. */
+@Composable
+private fun CommandChips(commands: List<PromptCommand>, onCommand: (PromptCommand) -> Unit) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(commands, key = { it.id }) { command ->
+            SuggestionChip(
+                onClick = { onCommand(command) },
+                label = { Text(command.label, style = MaterialTheme.typography.labelMedium) }
             )
         }
     }

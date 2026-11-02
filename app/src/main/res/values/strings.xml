@@ -3,4 +3,9 @@
     <string name="app_name">DSK 스마트</string>
     <string name="app_name_short">DSK</string>
     <string name="share_label">DSK 스마트에 묻기</string>
+    <string name="shortcut_new_chat">새 채팅</string>
+    <string name="shortcut_camera">사진으로 질문</string>
+    <string name="shortcut_camera_long">사진 찍어서 질문하기</string>
+    <string name="shortcut_voice">음성으로 질문</string>
+    <string name="shortcut_voice_long">말로 질문하기</string>
 </resources>

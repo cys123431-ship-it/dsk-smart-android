@@ -1,5 +1,7 @@
 package com.dskapp.ui.settings
 
+import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -64,6 +67,8 @@ fun SettingsScreen(
     onBack: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val commands by viewModel.commands.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Results (save, backup, prices...) appear as a snackbar so they are visible from
@@ -215,6 +220,21 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
+            CommandsSection(
+                commands = commands,
+                onAdd = viewModel::addCommand,
+                onUpdate = viewModel::updateCommand,
+                onDelete = viewModel::deleteCommand,
+                onMove = viewModel::moveCommand,
+                onReset = viewModel::resetCommands
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            LinkSection(autoReadLinks = state.autoReadLinks, onToggle = viewModel::setAutoReadLinks)
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
             Text(text = "화면", style = MaterialTheme.typography.titleMedium)
             Text(
                 text = "테마",
@@ -346,6 +366,16 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
+            ErrorLogSection(
+                entryCount = state.errorCount,
+                lastEntryTime = state.lastErrorTime,
+                readLog = viewModel::readErrorLog,
+                onClear = viewModel::clearErrorLog,
+                onShare = { log -> shareText(context, "DSK 스마트 오류 기록", log) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
             Text(text = "보안 안내", style = MaterialTheme.typography.titleSmall)
             Text(
                 text = "API 키는 이 기기의 암호화 저장소(Android Keystore)에만 보관되며 " +
@@ -358,6 +388,16 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/** Hands plain text to the share sheet (mail, messenger, notes...). */
+private fun shareText(context: Context, subject: String, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, subject)) }
 }
 
 @Composable

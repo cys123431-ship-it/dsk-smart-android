@@ -61,6 +61,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.chat.Attachment
+import com.dskapp.data.commands.CommandApplier
+import com.dskapp.data.commands.PromptCommand
+import com.dskapp.di.ServiceLocator
+import com.dskapp.ui.voice.SpeechReader
 import com.dskapp.data.chat.ConversationEntity
 import com.dskapp.data.export.ExportFormat
 import com.dskapp.data.export.ExportService
@@ -89,12 +93,24 @@ fun ChatScreen(
     onTogglePin: (ConversationEntity) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSearch: () -> Unit,
-    permanentDrawer: Boolean = false
+    permanentDrawer: Boolean = false,
+    startAction: StartAction? = null,
+    onStartActionHandled: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val commands by remember { ServiceLocator.commands(context) }.commands.collectAsStateWithLifecycle()
+
+    // Read-aloud engine: created on the first 🔊 tap, shut down with the screen.
+    val speechReader = remember {
+        SpeechReader(context) { message -> scope.launch { snackbarHostState.showSnackbar(message) } }
+    }
+    DisposableEffect(speechReader) {
+        onDispose { speechReader.release() }
+    }
+    val speakingId by speechReader.speakingId.collectAsStateWithLifecycle()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     var cameraCapture by remember { mutableStateOf<CameraCapture?>(null) }
@@ -168,6 +184,26 @@ fun ChatScreen(
         cameraCapture = null
     }
 
+    val pickCamera: () -> Unit = {
+        val capture = createCameraCapture(context)
+        if (capture != null) {
+            cameraCapture = capture
+            cameraLauncher.launch(capture.uri)
+        } else {
+            scope.launch { snackbarHostState.showSnackbar("카메라를 사용할 수 없습니다.") }
+        }
+    }
+
+    // Launcher shortcuts "사진으로 질문" / "음성으로 질문" land here in a fresh thread.
+    LaunchedEffect(startAction) {
+        when (startAction) {
+            StartAction.CAMERA -> pickCamera()
+            StartAction.VOICE -> if (!isListening) toggleVoice()
+            null -> return@LaunchedEffect
+        }
+        onStartActionHandled()
+    }
+
     val chat: @Composable (onOpenDrawer: (() -> Unit)?, modifier: Modifier) -> Unit = { onOpenDrawer, modifier ->
         ChatScaffold(
             state = state,
@@ -180,18 +216,14 @@ fun ChatScreen(
             onPickFile = {
                 filePicker.launch(DOCUMENT_MIME_TYPES)
             },
-            onPickCamera = {
-                val capture = createCameraCapture(context)
-                if (capture != null) {
-                    cameraCapture = capture
-                    cameraLauncher.launch(capture.uri)
-                } else {
-                    scope.launch { snackbarHostState.showSnackbar("카메라를 사용할 수 없습니다.") }
-                }
-            },
+            onPickCamera = pickCamera,
             isListening = isListening,
             onToggleVoice = toggleVoice,
             onOpenSearch = onOpenSearch,
+            commands = commands,
+            onCommand = { command -> viewModel.onInputChange(CommandApplier.apply(command.prompt, state.input)) },
+            speakingId = speakingId,
+            onSpeak = { message -> speechReader.speak(message.id, message.content) },
             modifier = modifier
         )
     }
@@ -253,6 +285,9 @@ fun ChatScreen(
     }
 }
 
+/** Something to do right after the screen opens (from a launcher shortcut). */
+enum class StartAction { CAMERA, VOICE }
+
 /** What the "파일" picker offers: plain text plus Word, PowerPoint and PDF. */
 private val DOCUMENT_MIME_TYPES = arrayOf(
     "text/*",
@@ -307,6 +342,10 @@ internal fun ChatScaffold(
     onOpenSearch: () -> Unit,
     isListening: Boolean = false,
     onToggleVoice: () -> Unit = {},
+    commands: List<PromptCommand> = emptyList(),
+    onCommand: (PromptCommand) -> Unit = {},
+    speakingId: Long? = null,
+    onSpeak: (ChatMessage) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -373,7 +412,9 @@ internal fun ChatScaffold(
                 isImporting = state.isImporting,
                 canSend = state.canSend,
                 isListening = isListening,
-                onToggleVoice = onToggleVoice
+                onToggleVoice = onToggleVoice,
+                commands = commands,
+                onCommand = onCommand
             )
         }
     ) { padding ->
@@ -383,6 +424,8 @@ internal fun ChatScaffold(
             onAttachmentClick = onAttachmentClick,
             onEdit = viewModel::editMessage,
             onRegenerate = viewModel::regenerate,
+            speakingId = speakingId,
+            onSpeak = onSpeak,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)

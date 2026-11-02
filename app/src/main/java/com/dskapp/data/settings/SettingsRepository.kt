@@ -110,6 +110,11 @@ class SettingsRepository(context: Context) {
         refresh()
     }
 
+    fun saveAutoReadLinks(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_AUTO_READ_LINKS, enabled) }
+        refresh()
+    }
+
     /** Remembers the server's model list so the per-thread picker works offline. */
     fun saveKnownModels(models: List<String>) {
         prefs.edit { putString(KEY_KNOWN_MODELS, models.joinToString("\n")) }
@@ -178,7 +183,8 @@ class SettingsRepository(context: Context) {
                 ?.getFloat(KEY_PRICE_IN, 0f)?.toDouble(),
             priceOutputPerMillion = prefs.takeIf { it.contains(KEY_PRICE_OUT) }
                 ?.getFloat(KEY_PRICE_OUT, 0f)?.toDouble(),
-            knownModels = knownModels
+            knownModels = knownModels,
+            autoReadLinks = prefs.getBoolean(KEY_AUTO_READ_LINKS, true)
         )
     }
 
@@ -220,7 +226,9 @@ class SettingsRepository(context: Context) {
         val fontScale: Float = 1f,
         val priceInputPerMillion: Double? = null,
         val priceOutputPerMillion: Double? = null,
-        val knownModels: List<String> = OpenAiCompatibleClient.SUGGESTED_MODELS
+        val knownModels: List<String> = OpenAiCompatibleClient.SUGGESTED_MODELS,
+        /** Fetch web pages for URLs in a sent message and attach their text. */
+        val autoReadLinks: Boolean = true
     ) {
         val isConfigured: Boolean get() = hasApiKey && baseUrl.isNotBlank() && model.isNotBlank()
 
@@ -251,6 +259,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_PRICE_IN = "price_input_per_million"
         private const val KEY_PRICE_OUT = "price_output_per_million"
         private const val KEY_KNOWN_MODELS = "known_models"
+        private const val KEY_AUTO_READ_LINKS = "auto_read_links"
         private const val KEY_USAGE_MONTH = "usage_month"
         private const val KEY_USAGE_IN = "usage_prompt_tokens"
         private const val KEY_USAGE_OUT = "usage_completion_tokens"

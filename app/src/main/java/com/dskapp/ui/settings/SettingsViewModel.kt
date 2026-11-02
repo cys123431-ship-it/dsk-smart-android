@@ -15,6 +15,9 @@ import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.ai.userMessage
 import com.dskapp.data.backup.BackupService
 import com.dskapp.data.chat.ChatRepository
+import com.dskapp.data.commands.CommandRepository
+import com.dskapp.data.commands.PromptCommand
+import com.dskapp.data.log.ErrorLog
 import com.dskapp.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -40,7 +43,10 @@ data class SettingsUiState(
     val priceOutput: String = "",
     val usage: SettingsRepository.MonthlyUsage? = null,
     val estimatedCostUsd: Double? = null,
-    val isBackupRunning: Boolean = false
+    val isBackupRunning: Boolean = false,
+    val autoReadLinks: Boolean = true,
+    val errorCount: Int = 0,
+    val lastErrorTime: String? = null
 )
 
 /**
@@ -52,8 +58,12 @@ class SettingsViewModel(
     private val appContext: Context,
     private val repository: SettingsRepository,
     private val chatRepository: ChatRepository,
-    private val aiClient: AiClient
+    private val aiClient: AiClient,
+    private val commandRepository: CommandRepository
 ) : ViewModel() {
+
+    /** Saved one-tap commands, edited in the "나만의 명령어" section. */
+    val commands: StateFlow<List<PromptCommand>> = commandRepository.commands
 
     private val _uiState = MutableStateFlow(
         SettingsUiState(
@@ -74,6 +84,7 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
+        refreshErrorLog()
         // Usage and stored settings change from other screens (chat writes tokens, the theme
         // can be toggled elsewhere); recombine so cost and appearance stay in sync without
         // the screen re-reading the repository on every recomposition.
@@ -84,6 +95,7 @@ class SettingsViewModel(
                         current.copy(
                             themeMode = settings.themeMode,
                             fontScale = settings.fontScale,
+                            autoReadLinks = settings.autoReadLinks,
                             usage = usage,
                             estimatedCostUsd = settings.costUsd(
                                 usage.promptTokens,
@@ -248,6 +260,28 @@ class SettingsViewModel(
         _uiState.update { it.copy(message = "단가를 저장했습니다.") }
     }
 
+    fun addCommand(label: String, prompt: String) = commandRepository.add(label, prompt)
+    fun updateCommand(command: PromptCommand) = commandRepository.update(command)
+    fun deleteCommand(id: String) = commandRepository.delete(id)
+    fun moveCommand(id: String, up: Boolean) = commandRepository.move(id, up)
+    fun resetCommands() = commandRepository.resetDefaults()
+
+    fun setAutoReadLinks(enabled: Boolean) = repository.saveAutoReadLinks(enabled)
+
+    fun readErrorLog(): String = ErrorLog.read()
+
+    fun clearErrorLog() {
+        ErrorLog.clear()
+        refreshErrorLog()
+    }
+
+    /** The log is a plain file, so the counts are re-read whenever the screen may show them. */
+    fun refreshErrorLog() {
+        _uiState.update {
+            it.copy(errorCount = ErrorLog.entryCount(), lastErrorTime = ErrorLog.lastEntryTime())
+        }
+    }
+
     fun exportBackup(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBackupRunning = true, message = null) }
@@ -309,14 +343,16 @@ class SettingsViewModel(
             context: Context,
             repository: SettingsRepository,
             chatRepository: ChatRepository,
-            aiClient: AiClient
+            aiClient: AiClient,
+            commandRepository: CommandRepository
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 SettingsViewModel(
                     context.applicationContext,
                     repository,
                     chatRepository,
-                    aiClient
+                    aiClient,
+                    commandRepository
                 )
             }
         }

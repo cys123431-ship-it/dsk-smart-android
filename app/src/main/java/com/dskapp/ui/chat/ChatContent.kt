@@ -40,6 +40,8 @@ fun ChatContent(
     onAttachmentClick: (Attachment) -> Unit,
     onEdit: (messageId: Long, text: String) -> Unit,
     onRegenerate: () -> Unit,
+    speakingId: Long? = null,
+    onSpeak: (ChatMessage) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -73,7 +75,9 @@ fun ChatContent(
                         canRegenerate = message.id == state.regenerableId,
                         onEdit = { text -> onEdit(message.id, text) },
                         onRegenerate = onRegenerate,
-                        usageText = usageText(message)
+                        usageText = usageText(message),
+                        isSpeaking = message.id == speakingId,
+                        onSpeak = { onSpeak(message) }
                     )
                 }
             }

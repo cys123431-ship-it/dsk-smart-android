@@ -36,8 +36,9 @@ import com.dskapp.ui.chat.SearchScreen
 import com.dskapp.ui.chat.SearchViewModel
 import com.dskapp.ui.settings.SettingsScreen
 import com.dskapp.ui.settings.SettingsViewModel
-import com.dskapp.ui.share.ShareInbox
-import com.dskapp.ui.share.SharedContent
+import com.dskapp.ui.chat.StartAction
+import com.dskapp.ui.share.LaunchAction
+import com.dskapp.ui.share.LaunchInbox
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -73,12 +74,13 @@ fun DskAppNavHost() {
 
     var selectedId by rememberSaveable { mutableLongStateOf(0L) }
 
-    var shareTarget by remember { mutableStateOf<Pair<Long, SharedContent>?>(null) }
+    // A launch request (share, launcher shortcut) waiting for the thread created for it.
+    var launchTarget by remember { mutableStateOf<Pair<Long, LaunchAction>?>(null) }
 
     // Follow the newest thread until the user picks one explicitly.
     LaunchedEffect(conversations) {
-        // A thread just created for a share may not be in a stale list yet; keep it selected.
-        if (shareTarget?.first == selectedId) return@LaunchedEffect
+        // A thread just created for a launch may not be in a stale list yet; keep it selected.
+        if (launchTarget?.first == selectedId) return@LaunchedEffect
         if (selectedId == 0L || conversations.none { it.id == selectedId }) {
             conversations.firstOrNull()?.let { selectedId = it.id }
         }
@@ -93,15 +95,19 @@ fun DskAppNavHost() {
         onDispose { chatOwner.viewModelStore.clear() }
     }
 
-    // "공유 → DSK 스마트" from another app opens in a fresh thread with the content attached.
-    val pendingShare by ShareInbox.pending.collectAsStateWithLifecycle()
-    LaunchedEffect(pendingShare) {
-        val share = pendingShare ?: return@LaunchedEffect
-        ShareInbox.consume(share)
+    // Shares and launcher shortcuts open in a fresh thread; a notification opens its thread.
+    val pendingLaunch by LaunchInbox.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingLaunch) {
+        val action = pendingLaunch ?: return@LaunchedEffect
+        LaunchInbox.consume(action)
         navController.popBackStack(ChatRoute, inclusive = false)
-        listViewModel.newConversation { id ->
-            shareTarget = id to share
-            selectedId = id
+        if (action is LaunchAction.OpenConversation) {
+            selectedId = action.conversationId
+        } else {
+            listViewModel.newConversation { id ->
+                launchTarget = id to action
+                selectedId = id
+            }
         }
     }
 
@@ -123,11 +129,18 @@ fun DskAppNavHost() {
                 )
             )
 
-            val target = shareTarget
-            if (target != null && target.first == selectedId) {
+            val target = launchTarget?.takeIf { it.first == selectedId }
+            val startAction = when (target?.second) {
+                is LaunchAction.Camera -> StartAction.CAMERA
+                is LaunchAction.Voice -> StartAction.VOICE
+                else -> null
+            }
+            if (target != null && startAction == null) {
                 LaunchedEffect(target) {
-                    chatViewModel.acceptShare(target.second.text, target.second.uris)
-                    shareTarget = null
+                    (target.second as? LaunchAction.Share)?.let {
+                        chatViewModel.acceptShare(it.content.text, it.content.uris)
+                    }
+                    launchTarget = null
                 }
             }
 
@@ -141,14 +154,22 @@ fun DskAppNavHost() {
                 onTogglePin = listViewModel::togglePin,
                 onOpenSettings = { navController.navigate(SettingsRoute) },
                 onOpenSearch = { navController.navigate(SearchRoute) },
-                permanentDrawer = LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH_DP
+                permanentDrawer = LocalConfiguration.current.screenWidthDp >= TABLET_MIN_WIDTH_DP,
+                startAction = startAction,
+                onStartActionHandled = { launchTarget = null }
             )
         }
 
         composable<SettingsRoute> {
             SettingsScreen(
                 viewModel = viewModel(
-                    factory = SettingsViewModel.factory(context, settingsRepository, chatRepository, aiClient)
+                    factory = SettingsViewModel.factory(
+                        context,
+                        settingsRepository,
+                        chatRepository,
+                        aiClient,
+                        ServiceLocator.commands(context)
+                    )
                 ),
                 onBack = { navController.popBackStack() }
             )

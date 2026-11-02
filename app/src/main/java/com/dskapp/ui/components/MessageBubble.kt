@@ -21,7 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -68,7 +70,9 @@ fun MessageBubble(
     canRegenerate: Boolean = false,
     onEdit: (String) -> Unit = {},
     onRegenerate: () -> Unit = {},
-    usageText: String? = null
+    usageText: String? = null,
+    isSpeaking: Boolean = false,
+    onSpeak: () -> Unit = {}
 ) {
     if (message.isUser) {
         UserTurn(
@@ -84,7 +88,9 @@ fun MessageBubble(
             modifier = modifier,
             canRegenerate = canRegenerate,
             onRegenerate = onRegenerate,
-            usageText = usageText
+            usageText = usageText,
+            isSpeaking = isSpeaking,
+            onSpeak = onSpeak
         )
     }
 }
@@ -174,7 +180,9 @@ private fun AssistantTurn(
     modifier: Modifier,
     canRegenerate: Boolean,
     onRegenerate: () -> Unit,
-    usageText: String?
+    usageText: String?,
+    isSpeaking: Boolean,
+    onSpeak: () -> Unit
 ) {
     Row(modifier = modifier.fillMaxWidth()) {
         // Small brand avatar, like ChatGPT's logo column.
@@ -220,6 +228,13 @@ private fun AssistantTurn(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     CopyAction(message.content)
+                    if (!message.isError) {
+                        ActionIcon(
+                            icon = if (isSpeaking) Icons.Outlined.StopCircle else Icons.AutoMirrored.Outlined.VolumeUp,
+                            contentDescription = if (isSpeaking) "읽기 멈춤" else "소리 내어 읽기",
+                            onClick = onSpeak
+                        )
+                    }
                     if (canRegenerate) {
                         ActionIcon(
                             icon = Icons.Outlined.Refresh,

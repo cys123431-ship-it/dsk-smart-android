@@ -15,7 +15,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.settings.SettingsRepository.ThemeMode
 import com.dskapp.di.ServiceLocator
 import com.dskapp.ui.DskAppNavHost
-import com.dskapp.ui.share.ShareInbox
+import com.dskapp.ui.share.LaunchInbox
 import com.dskapp.ui.theme.DskTheme
 
 class MainActivity : ComponentActivity() {
@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // A recreated activity still carries the original share intent; deliver it once.
-        if (savedInstanceState == null) ShareInbox.offer(intent)
+        if (savedInstanceState == null) LaunchInbox.offer(intent)
 
         val settings = ServiceLocator.settings(this)
 
@@ -61,6 +61,6 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ShareInbox.offer(intent)
+        LaunchInbox.offer(intent)
     }
 }
