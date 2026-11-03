@@ -7,6 +7,7 @@ import com.dskapp.agent.AgentLevel
 import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.ai.ProviderConfig
 import com.dskapp.data.ai.TokenUsage
+import com.dskapp.data.search.SearchProviderType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -142,6 +143,16 @@ class SettingsRepository(context: Context) {
         refresh()
     }
 
+    fun saveWebSearch(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_WEB_SEARCH, enabled) }
+        refresh()
+    }
+
+    fun saveSearchProvider(provider: SearchProviderType) {
+        prefs.edit { putString(KEY_SEARCH_PROVIDER, provider.name) }
+        refresh()
+    }
+
     /** Remembers the server's model list so the per-thread picker works offline. */
     fun saveKnownModels(models: List<String>) {
         prefs.edit { putString(KEY_KNOWN_MODELS, models.joinToString("\n")) }
@@ -212,6 +223,8 @@ class SettingsRepository(context: Context) {
                 ?.getFloat(KEY_PRICE_OUT, 0f)?.toDouble(),
             knownModels = knownModels,
             autoReadLinks = prefs.getBoolean(KEY_AUTO_READ_LINKS, true),
+            webSearch = prefs.getBoolean(KEY_WEB_SEARCH, true),
+            searchProvider = SearchProviderType.fromName(prefs.getString(KEY_SEARCH_PROVIDER, null)),
             appLock = prefs.getBoolean(KEY_APP_LOCK, false),
             agentLevel = prefs.getString(KEY_AGENT_LEVEL, null)
                 ?.let { name -> AgentLevel.entries.firstOrNull { it.name == name } }
@@ -263,6 +276,9 @@ class SettingsRepository(context: Context) {
         val knownModels: List<String> = OpenAiCompatibleClient.SUGGESTED_MODELS,
         /** Fetch web pages for URLs in a sent message and attach their text. */
         val autoReadLinks: Boolean = true,
+        /** Let the model ask for web searches; [searchProvider] runs them. */
+        val webSearch: Boolean = true,
+        val searchProvider: SearchProviderType = SearchProviderType.DUCKDUCKGO,
         /** Ask for fingerprint / face / screen lock when the app is opened. */
         val appLock: Boolean = false,
         /** Phone agent: how far it may go, how many steps, extra screenshot input, allow-list. */
@@ -305,6 +321,8 @@ class SettingsRepository(context: Context) {
         private const val KEY_PRICE_OUT = "price_output_per_million"
         private const val KEY_KNOWN_MODELS = "known_models"
         private const val KEY_AUTO_READ_LINKS = "auto_read_links"
+        private const val KEY_WEB_SEARCH = "web_search"
+        private const val KEY_SEARCH_PROVIDER = "search_provider"
         private const val KEY_APP_LOCK = "app_lock"
         private const val KEY_AGENT_LEVEL = "agent_level"
         private const val KEY_AGENT_MAX_STEPS = "agent_max_steps"

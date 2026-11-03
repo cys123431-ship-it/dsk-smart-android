@@ -47,6 +47,8 @@ data class SettingsUiState(
     val estimatedCostUsd: Double? = null,
     val isBackupRunning: Boolean = false,
     val autoReadLinks: Boolean = true,
+    val webSearch: Boolean = true,
+    val searchEngine: String = "",
     val appLock: Boolean = false,
     val agentLevel: AgentLevel = AgentLevel.CONTROL,
     val agentMaxSteps: Int = 25,
@@ -103,6 +105,8 @@ class SettingsViewModel(
                             themeMode = settings.themeMode,
                             fontScale = settings.fontScale,
                             autoReadLinks = settings.autoReadLinks,
+                            webSearch = settings.webSearch,
+                            searchEngine = settings.searchProvider.label,
                             appLock = settings.appLock,
                             agentLevel = settings.agentLevel,
                             agentMaxSteps = settings.agentMaxSteps,
@@ -279,6 +283,8 @@ class SettingsViewModel(
     fun resetCommands() = commandRepository.resetDefaults()
 
     fun setAutoReadLinks(enabled: Boolean) = repository.saveAutoReadLinks(enabled)
+
+    fun setWebSearch(enabled: Boolean) = repository.saveWebSearch(enabled)
 
     fun setAgentLevel(level: AgentLevel) = repository.saveAgentLevel(level)
     fun setAgentMaxSteps(steps: Int) = repository.saveAgentMaxSteps(steps)

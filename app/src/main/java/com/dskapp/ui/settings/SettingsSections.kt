@@ -288,8 +288,14 @@ private fun CommandDialog(
 
 /** Toggle for letting the assistant fetch link contents included in user messages. */
 @Composable
-fun LinkSection(autoReadLinks: Boolean, onToggle: (Boolean) -> Unit) {
-    Text("링크 읽기", style = MaterialTheme.typography.titleMedium)
+fun LinkSection(
+    autoReadLinks: Boolean,
+    onToggle: (Boolean) -> Unit,
+    webSearch: Boolean,
+    searchEngine: String,
+    onToggleSearch: (Boolean) -> Unit
+) {
+    Text("링크 읽기 · 웹 검색", style = MaterialTheme.typography.titleMedium)
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -303,6 +309,21 @@ fun LinkSection(autoReadLinks: Boolean, onToggle: (Boolean) -> Unit) {
             )
         }
         Switch(checked = autoReadLinks, onCheckedChange = onToggle)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("웹 검색 ($searchEngine)", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "최신 정보가 필요한 질문이면 AI가 검색해서 출처와 함께 답합니다. " +
+                    "검색한 질문은 토큰이 수천~2만 개 더 듭니다. 예약 작업에도 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = webSearch, onCheckedChange = onToggleSearch)
     }
 }
 

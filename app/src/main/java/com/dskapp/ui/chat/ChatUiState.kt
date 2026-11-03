@@ -14,7 +14,9 @@ data class ChatMessage(
     val promptTokens: Int? = null,
     val completionTokens: Int? = null,
     val reasoning: String? = null,
-    val isBookmarked: Boolean = false
+    val isBookmarked: Boolean = false,
+    /** Shown instead of "생각하는 중…" while the answer waits on something (web search). */
+    val status: String? = null
 ) {
     /** A real assistant answer (not an error bubble or an empty placeholder). */
     val isExportable: Boolean

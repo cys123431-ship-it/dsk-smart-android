@@ -91,6 +91,7 @@ fun MessageBubble(
         AssistantTurn(
             message = message,
             modifier = modifier,
+            onAttachmentClick = onAttachmentClick,
             canRegenerate = canRegenerate,
             onRegenerate = onRegenerate,
             usageText = usageText,
@@ -180,10 +181,12 @@ private fun UserTurn(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AssistantTurn(
     message: ChatMessage,
     modifier: Modifier,
+    onAttachmentClick: (Attachment) -> Unit,
     canRegenerate: Boolean,
     onRegenerate: () -> Unit,
     usageText: String?,
@@ -220,6 +223,12 @@ private fun AssistantTurn(
             }
 
             when {
+                message.isThinking && message.status != null -> Text(
+                    text = message.status,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
                 message.isThinking && !message.reasoning.isNullOrBlank() -> Unit
 
                 message.isThinking -> Text(
@@ -234,6 +243,22 @@ private fun AssistantTurn(
                     markdown = message.content,
                     isError = message.isError
                 )
+            }
+
+            // Web search results the answer was based on: tap to see what was found.
+            if (message.attachments.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    message.attachments.forEach { attachment ->
+                        AttachmentChip(
+                            attachment = attachment,
+                            onClick = { onAttachmentClick(attachment) }
+                        )
+                    }
+                }
             }
 
             // Actions are hidden while thinking and for empty answers, so a pending turn

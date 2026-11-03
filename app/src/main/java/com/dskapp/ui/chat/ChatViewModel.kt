@@ -29,6 +29,8 @@ import com.dskapp.data.image.ImageProcessor
 import com.dskapp.data.link.LinkReader
 import com.dskapp.data.link.UrlFinder
 import com.dskapp.data.log.ErrorLog
+import com.dskapp.data.search.SearchProtocol
+import com.dskapp.data.search.WebSearchRunner
 import com.dskapp.data.settings.SettingsRepository
 import com.dskapp.di.ServiceLocator
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +60,8 @@ class ChatViewModel(
     private val chatRepository: ChatRepository,
     private val settingsRepository: SettingsRepository,
     private val aiClient: AiClient,
-    private val linkReader: LinkReader
+    private val linkReader: LinkReader,
+    private val webSearch: WebSearchRunner
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -385,22 +388,33 @@ class ChatViewModel(
 
         val model = _uiState.value.threadModel
         val context = buildContext(model)
-        val system = buildSystemPrompt(context.summary, photoAttached)
+        val searchEnabled = settingsRepository.state.value.webSearch
+        val system = buildSystemPrompt(context.summary, photoAttached, searchEnabled)
 
         val builder = StringBuilder()
         val thoughts = StringBuilder()
         var failed = false
         var usage: TokenUsage? = null
+        var status: String? = null
+        // Search results the answer used; stored with it so follow-up questions still see them.
+        val searchFiles = mutableListOf<Attachment>()
 
         // Shows the streamed answer and thinking so far; inline <think> blocks are split off.
+        // A reply that may still turn into a <search> request is held back.
         fun render() {
             val (raw, streamed) = synchronized(builder) { builder.toString() to thoughts.toString() }
             val (answer, reasoning) = splitReasoning(raw, streamed)
+            val shown = if (searchEnabled && SearchProtocol.mayBeRequest(answer)) "" else answer
             _uiState.update { current ->
                 current.copy(
                     messages = current.messages.map { message ->
                         if (message.id == placeholderId) {
-                            message.copy(content = answer, reasoning = reasoning, isThinking = answer.isEmpty())
+                            message.copy(
+                                content = shown,
+                                reasoning = reasoning,
+                                isThinking = shown.isEmpty(),
+                                status = status
+                            )
                         } else {
                             message
                         }
@@ -410,25 +424,53 @@ class ChatViewModel(
         }
 
         val job = viewModelScope.launch {
-            aiClient.stream(
-                systemPrompt = system,
-                messages = context.messages,
-                model = model,
-                onText = { delta ->
-                    synchronized(builder) { builder.append(delta) }
-                    render()
-                },
-                onReasoning = { delta ->
-                    synchronized(builder) { thoughts.append(delta) }
-                    render()
-                },
-                onError = { error ->
-                    failed = true
-                    ErrorLog.record("chat", "${error::class.simpleName}: ${error.userMessage}")
-                    _uiState.update { it.copy(banner = error.userMessage) }
-                },
-                onUsage = { usage = it }
-            ).collect { }
+            var messages = context.messages
+            var round = 0
+            while (true) {
+                aiClient.stream(
+                    systemPrompt = system,
+                    messages = messages,
+                    model = model,
+                    onText = { delta ->
+                        synchronized(builder) { builder.append(delta) }
+                        render()
+                    },
+                    onReasoning = { delta ->
+                        synchronized(builder) { thoughts.append(delta) }
+                        render()
+                    },
+                    onError = { error ->
+                        failed = true
+                        ErrorLog.record("chat", "${error::class.simpleName}: ${error.userMessage}")
+                        _uiState.update { it.copy(banner = error.userMessage) }
+                    },
+                    onUsage = { usage = usage?.plus(it) ?: it }
+                ).collect { }
+
+                if (failed || !searchEnabled || round >= SearchProtocol.MAX_ROUNDS) break
+                val raw = synchronized(builder) { builder.toString() }
+                val (inlineThoughts, answer) = ThinkTags.split(raw)
+                val queries = SearchProtocol.parseRequest(answer) ?: break
+
+                // Run the search, then ask again with the results as the next user turn.
+                round++
+                status = "🔍 ${queries.joinToString(", ")} 검색 중…"
+                synchronized(builder) {
+                    builder.setLength(0)
+                    inlineThoughts?.let { thoughts.append(it) }
+                    if (thoughts.isNotEmpty()) thoughts.append("\n\n")
+                }
+                render()
+                val report = webSearch.run(queries)
+                report.errors.forEach { ErrorLog.record("search", it) }
+                val results = SearchProtocol.resultsMessage(report, finalRound = round >= SearchProtocol.MAX_ROUNDS)
+                if (report.hits.isNotEmpty()) {
+                    searchFiles += AttachmentStore.saveText(appContext, "🔍 ${queries.first()}".take(60), results)
+                }
+                messages = messages + AiMessage(AiRole.ASSISTANT, answer.trim()) + AiMessage(AiRole.USER, results)
+                status = null
+                render()
+            }
         }
         streamJob = job
 
@@ -440,15 +482,28 @@ class ChatViewModel(
             withContext(NonCancellable) {
                 val (raw, streamed) = synchronized(builder) { builder.toString() to thoughts.toString() }
                 val (answer, reasoning) = splitReasoning(raw, streamed)
-                finishAnswer(placeholderId, answer.trim(), failed, stopped = job.isCancelled, usage = usage, reasoning = reasoning)
+                // A request still pending after the last round (or a stop mid-search) is not an answer.
+                val finalText = if (searchEnabled) SearchProtocol.stripRequests(answer) else answer.trim()
+                val stored = finishAnswer(
+                    placeholderId,
+                    finalText,
+                    failed,
+                    stopped = job.isCancelled,
+                    usage = usage,
+                    reasoning = reasoning,
+                    attachments = searchFiles
+                )
+                if (!stored) AttachmentStore.deleteAll(searchFiles)
                 if (streamJob === job) streamJob = null
             }
         }
     }
 
+
     /**
      * Replaces the streaming placeholder with the stored answer. A stop before any text
      * stores nothing; a failure stores a short error bubble that is never resent to the model.
+     * True when a real answer was stored (and [attachments] with it).
      */
     private suspend fun finishAnswer(
         placeholderId: Long,
@@ -456,9 +511,11 @@ class ChatViewModel(
         failed: Boolean,
         stopped: Boolean,
         usage: TokenUsage?,
-        reasoning: String?
-    ) {
+        reasoning: String?,
+        attachments: List<Attachment> = emptyList()
+    ): Boolean {
         val hasAnswer = finalText.isNotEmpty()
+        val keptAttachments = if (hasAnswer) attachments else emptyList()
         val content = when {
             hasAnswer -> finalText
             stopped -> null
@@ -476,7 +533,8 @@ class ChatViewModel(
                     isError = !hasAnswer,
                     promptTokens = usage?.promptTokens,
                     completionTokens = usage?.completionTokens,
-                    reasoning = reasoning
+                    reasoning = reasoning,
+                    attachmentsJson = AttachmentCodec.encode(keptAttachments)
                 )
             }.getOrNull()
         }
@@ -496,11 +554,13 @@ class ChatViewModel(
                     isError = !hasAnswer,
                     promptTokens = usage?.promptTokens,
                     completionTokens = usage?.completionTokens,
-                    reasoning = reasoning
+                    reasoning = reasoning,
+                    attachments = keptAttachments
                 )
             }
             current.copy(isSending = false, messages = messages)
         }
+        return hasAnswer && persistedId != null
     }
 
     /** (answer, reasoning): streamed thinking plus any inline <think> block. */
@@ -512,8 +572,9 @@ class ChatViewModel(
         return answer to reasoning
     }
 
-    private fun buildSystemPrompt(summary: String?, photoAttached: Boolean): String = buildString {
+    private fun buildSystemPrompt(summary: String?, photoAttached: Boolean, webSearch: Boolean): String = buildString {
         append(Prompts.SYSTEM)
+        if (webSearch) append("\n\n").append(SearchProtocol.instructions(SearchProtocol.todayInKorea()))
         val custom = settingsRepository.state.value.customInstructions
         if (custom.isNotBlank()) {
             append("\n\n").append(Prompts.CUSTOM_INSTRUCTIONS_HEADER).append('\n').append(custom)
@@ -702,7 +763,8 @@ class ChatViewModel(
                     chatRepository = chatRepository,
                     settingsRepository = settingsRepository,
                     aiClient = aiClient,
-                    linkReader = ServiceLocator.links()
+                    linkReader = ServiceLocator.links(),
+                    webSearch = ServiceLocator.webSearch(context)
                 )
             }
         }

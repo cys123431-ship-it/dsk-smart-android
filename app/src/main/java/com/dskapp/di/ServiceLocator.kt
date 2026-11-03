@@ -6,6 +6,11 @@ import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.chat.ChatRepository
 import com.dskapp.data.commands.CommandRepository
 import com.dskapp.data.link.LinkReader
+import com.dskapp.data.search.DuckDuckGoSearch
+import com.dskapp.data.search.PageExcerpt
+import com.dskapp.data.search.SearchProviderType
+import com.dskapp.data.search.WebSearchProvider
+import com.dskapp.data.search.WebSearchRunner
 import com.dskapp.data.settings.SettingsRepository
 import okhttp3.OkHttpClient
 
@@ -37,6 +42,26 @@ object ServiceLocator {
     private val linkReader: LinkReader by lazy { LinkReader(httpClient) }
 
     fun links(): LinkReader = linkReader
+
+    private val duckDuckGo: WebSearchProvider by lazy { DuckDuckGoSearch(httpClient) }
+
+    /**
+     * Web search with the engine chosen in Settings. A new engine (Brave, Tavily) is one
+     * more branch here plus its [SearchProviderType] entry.
+     */
+    fun webSearch(context: Context): WebSearchRunner {
+        val settings = settings(context)
+        return WebSearchRunner(
+            provider = {
+                when (settings.state.value.searchProvider) {
+                    SearchProviderType.DUCKDUCKGO -> duckDuckGo
+                }
+            },
+            pageReader = { url ->
+                linkReader.read(url).map { PageExcerpt(it.url, it.title, it.text) }
+            }
+        )
+    }
 
     fun commands(context: Context): CommandRepository =
         commandRepository ?: synchronized(this) {

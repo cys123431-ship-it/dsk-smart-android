@@ -233,7 +233,13 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-            LinkSection(autoReadLinks = state.autoReadLinks, onToggle = viewModel::setAutoReadLinks)
+            LinkSection(
+                autoReadLinks = state.autoReadLinks,
+                onToggle = viewModel::setAutoReadLinks,
+                webSearch = state.webSearch,
+                searchEngine = state.searchEngine,
+                onToggleSearch = viewModel::setWebSearch
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 

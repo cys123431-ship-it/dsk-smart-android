@@ -77,6 +77,15 @@ nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4   (이미지 입력)
 - 보낸 메시지에 웹 주소가 있으면 앱이 페이지를 직접 가져와 본문만 뽑아 함께 전송 (최대 3개, 페이지당 2MB·2만 자)
 - 첨부 칩에 "🔗 페이지 제목"으로 표시, 설정에서 끌 수 있음. EUC-KR 등 옛 한글 페이지도 자동 판별
 
+### 웹 검색
+- 최신 정보(뉴스·가격·일정·출시·환율 등)가 필요한 질문이면 AI 가 먼저 검색어를 정하고, 앱이 **DuckDuckGo** 로 검색 (API 키 불필요)
+- 상위 결과 8개의 요약 + 앞쪽 3개 페이지 본문(각 3천 자)을 AI 에 넘겨 출처 링크와 함께 답변. 한 답변에 검색 최대 2번
+- 답변 아래 "🔍 검색어" 칩을 누르면 AI 가 본 검색 결과를 확인. 다음 질문에서도 그 결과를 이어서 사용
+- 예약 작업에도 적용 ("매일 아침 8시 IT 뉴스 요약" 같은 요청)
+- 설정 → 링크 읽기 · 웹 검색에서 끌 수 있음. 검색한 질문은 토큰이 수천~2만 개 더 듦
+- 동작 방식: 도구 호출(function calling) 대신 답변 속 `<search>검색어</search>` 표시를 앱이 알아보는 방식 → 어떤 OpenAI 호환 서버·모델에서도 동작, 스트리밍 유지
+- 검색 엔진 추가(Brave·Tavily 등): `data/search/` 에 `WebSearchProvider` 구현 1개 + `SearchProviderType` 항목 + `ServiceLocator.webSearch` 분기 1줄
+
 ### 나만의 명령어
 - 입력창 위 버튼("영어로 번역", "3줄 요약", "맞춤법 교정"…)을 누르면 요청 문구가 입력창에 들어감
 - 설정에서 추가·수정·삭제·순서 변경. 명령 안에 `{입력}`을 넣으면 그 자리에 입력한 글이 들어감
@@ -203,6 +212,7 @@ app/src/main/java/com/dskapp/
 │  ├─ attachment/                AttachmentStore, TextDecoding, DocumentImporter(docx/pptx/pdf)
 │  ├─ backup/                    BackupService (.zip 백업·복원), BackupCodec
 │  ├─ schedule/                  예약 작업: 저장·시각 계산·알람·JobService·알림·실행기
+│  ├─ search/                    웹 검색: 검색 요청 규칙(SearchProtocol), 엔진 인터페이스, DuckDuckGo, 결과 수집기
 │  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
 │  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
 │  └─ settings/                  SettingsRepository, KeystoreCipher (API 키 암호화)

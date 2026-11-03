@@ -7,11 +7,13 @@ import com.dskapp.data.ai.AiResult
 import com.dskapp.data.ai.AiRole
 import com.dskapp.data.ai.Prompts
 import com.dskapp.data.ai.ThinkTags
+import com.dskapp.data.ai.TokenUsage
 import com.dskapp.data.ai.userMessage
 import com.dskapp.data.attachment.AttachmentStore
 import com.dskapp.data.chat.Attachment
 import com.dskapp.data.chat.AttachmentCodec
 import com.dskapp.data.link.UrlFinder
+import com.dskapp.data.search.SearchProtocol
 import com.dskapp.di.ServiceLocator
 import com.dskapp.ui.chat.ChatViewModel
 
@@ -71,33 +73,58 @@ object ScheduledTaskRunner {
                 append("\n```")
             }
         }
+        val searchEnabled = settings.state.value.webSearch
         val system = buildString {
             append(Prompts.SYSTEM)
             val custom = settings.state.value.customInstructions
             if (custom.isNotBlank()) append("\n\n").append(Prompts.CUSTOM_INSTRUCTIONS_HEADER).append('\n').append(custom)
+            if (searchEnabled) append("\n\n").append(SearchProtocol.instructions(SearchProtocol.todayInKorea()))
             append("\n\n").append(Prompts.SCHEDULED_HINT)
         }
 
-        val result = ServiceLocator.aiClient(appContext).complete(
-            systemPrompt = system,
-            messages = listOf(AiMessage(AiRole.USER, requestText)),
-            maxTokens = MAX_TOKENS,
-            model = task.model ?: existing?.model
-        )
+        // Same search loop as the chat screen ("매일 아침 뉴스 요약" needs it most).
+        var messages = listOf(AiMessage(AiRole.USER, requestText))
+        var usage: TokenUsage? = null
+        val searchFiles = mutableListOf<Attachment>()
+        var round = 0
+        var result: AiResult
+        while (true) {
+            result = ServiceLocator.aiClient(appContext).complete(
+                systemPrompt = system,
+                messages = messages,
+                maxTokens = MAX_TOKENS,
+                model = task.model ?: existing?.model
+            )
+            if (result !is AiResult.Success) break
+            result.usage?.let { usage = usage?.plus(it) ?: it }
+            if (!searchEnabled || round >= SearchProtocol.MAX_ROUNDS) break
+            val queries = SearchProtocol.parseRequest(ThinkTags.split(result.text).second) ?: break
+            round++
+            val report = ServiceLocator.webSearch(appContext).run(queries)
+            val results = SearchProtocol.resultsMessage(report, finalRound = round >= SearchProtocol.MAX_ROUNDS)
+            if (report.hits.isNotEmpty()) {
+                searchFiles += AttachmentStore.saveText(appContext, "🔍 ${queries.first()}".take(60), results)
+            }
+            messages = messages + AiMessage(AiRole.ASSISTANT, result.text.trim()) + AiMessage(AiRole.USER, results)
+        }
         when (result) {
             is AiResult.Success -> {
-                val (reasoning, answer) = ThinkTags.split(result.text)
+                val (reasoning, raw) = ThinkTags.split(result.text)
+                val answer = (if (searchEnabled) SearchProtocol.stripRequests(raw) else raw.trim())
+                    .ifEmpty { "응답이 비어 있습니다." }
                 chats.appendMessage(
                     conversationId = conversationId,
                     role = ChatViewModel.ROLE_ASSISTANT,
-                    content = answer.trim().ifEmpty { result.text },
-                    promptTokens = result.usage?.promptTokens,
-                    completionTokens = result.usage?.completionTokens,
+                    content = answer,
+                    attachmentsJson = AttachmentCodec.encode(searchFiles),
+                    promptTokens = usage?.promptTokens,
+                    completionTokens = usage?.completionTokens,
                     reasoning = reasoning
                 )
-                RunOutcome(conversationId, answer.trim().ifEmpty { result.text })
+                RunOutcome(conversationId, answer)
             }
             is AiResult.Failure -> {
+                AttachmentStore.deleteAll(searchFiles)
                 chats.appendMessage(
                     conversationId = conversationId,
                     role = ChatViewModel.ROLE_ASSISTANT,

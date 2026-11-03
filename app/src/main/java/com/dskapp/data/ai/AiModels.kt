@@ -32,7 +32,11 @@ sealed interface AiResult {
 }
 
 /** Token counts reported by the server for one call. */
-data class TokenUsage(val promptTokens: Int, val completionTokens: Int)
+data class TokenUsage(val promptTokens: Int, val completionTokens: Int) {
+    /** Totals across several calls for one answer (web search adds rounds). */
+    operator fun plus(other: TokenUsage) =
+        TokenUsage(promptTokens + other.promptTokens, completionTokens + other.completionTokens)
+}
 
 /**
  * Configuration of the OpenAI-compatible endpoint. All three values are user-supplied in
