@@ -37,9 +37,12 @@ object ImageProcessor {
             runCatching {
                 val resolver = context.contentResolver
 
+                // A bounds-only decode always returns null by design; success shows in outWidth.
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                    ?: throw IOException("이미지를 열 수 없습니다.")
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    throw IOException("이미지를 열 수 없거나 지원하지 않는 형식입니다.")
+                }
 
                 val decodeOptions = BitmapFactory.Options().apply {
                     inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight)

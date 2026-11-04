@@ -171,8 +171,10 @@ class ChatViewModel(
             val bytes = ImageProcessor.toJpegBytes(appContext, uri)
             tempFile?.let { withContext(Dispatchers.IO) { it.delete() } }
             if (bytes.isFailure) {
+                val error = bytes.exceptionOrNull()
+                ErrorLog.record("photo", error?.message ?: "사진을 불러오지 못했습니다.", error)
                 _uiState.update {
-                    it.copy(isImporting = false, banner = "사진을 불러오지 못했습니다.")
+                    it.copy(isImporting = false, banner = "사진을 불러오지 못했습니다: ${error?.message ?: "알 수 없는 오류"}")
                 }
                 return@launch
             }
