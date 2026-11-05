@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -24,7 +25,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
@@ -67,11 +66,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.schedule.ScheduleCalc
 import com.dskapp.data.schedule.ScheduleNotifier
 import com.dskapp.data.schedule.ScheduledTask
+import com.dskapp.ui.components.ModelMenuItems
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 /** ISO day-of-week (1=월 .. 7=일) to the single Hangul character shown on chips. */
 private val DAY_LABELS = listOf("월", "화", "수", "목", "금", "토", "일")
+
+/** Cap for the model menu; the server may list 100+ models that must stay scrollable. */
+private val MODEL_MENU_MAX_HEIGHT = 300.dp
 
 private fun dayLabel(isoDay: Int): String = DAY_LABELS[isoDay - 1]
 
@@ -433,23 +436,21 @@ private fun TaskEditorDialog(
                     DropdownMenu(
                         expanded = modelMenuOpen,
                         onDismissRequest = { modelMenuOpen = false },
+                        // Bounded height: 100+ models would otherwise grow the menu past the
+                        // dialog. Past the cap the menu scrolls.
+                        modifier = Modifier.heightIn(max = MODEL_MENU_MAX_HEIGHT),
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("기본 모델 (" + defaultModel.substringAfterLast('/') + ")") },
-                            onClick = {
-                                model = null
+                        ModelMenuItems(
+                            models = models,
+                            selected = model,
+                            onSelect = { candidate ->
+                                model = candidate
                                 modelMenuOpen = false
                             },
+                            defaultLabel = "기본 모델 (" + defaultModel.substringAfterLast('/') + ")",
+                            // The button shows the short name, so the menu does too.
+                            labelFor = { candidate -> candidate.substringAfterLast('/') },
                         )
-                        models.forEach { candidate ->
-                            DropdownMenuItem(
-                                text = { Text(candidate.substringAfterLast('/')) },
-                                onClick = {
-                                    model = candidate
-                                    modelMenuOpen = false
-                                },
-                            )
-                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))

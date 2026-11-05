@@ -16,12 +16,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,7 +35,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -52,6 +49,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.settings.SettingsRepository
+import com.dskapp.ui.components.MODEL_LIST_BOX_HEIGHT
+import com.dskapp.ui.components.ScrollableModelList
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -152,19 +151,14 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            OutlinedTextField(
-                value = state.model,
-                onValueChange = viewModel::onModelChange,
-                label = { Text("모델") },
-                placeholder = { Text("deepseek-ai/DeepSeek-V4.1-Flash") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
+            // Directly under the connection fields: the full model list in its own scroll box.
+            // The box has a fixed height, so it scrolls inside this page instead of growing it.
             ModelPicker(
                 models = state.availableModels,
                 selected = state.model,
-                onSelect = viewModel::onModelChange
+                onSelect = viewModel::onModelChange,
+                onLoadModels = viewModel::loadModels,
+                isLoading = state.isLoadingModels
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -200,6 +194,16 @@ fun SettingsScreen(
             ) {
                 Text("저장")
             }
+
+            // Free-text entry for a model id that the server does not list.
+            OutlinedTextField(
+                value = state.model,
+                onValueChange = viewModel::onModelChange,
+                label = { Text("모델 (직접 입력)") },
+                placeholder = { Text("deepseek-ai/DeepSeek-V4.1-Flash") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
@@ -446,50 +450,56 @@ private fun shareText(context: Context, subject: String, text: String) {
     runCatching { context.startActivity(Intent.createChooser(intent, subject)) }
 }
 
+/**
+ * "사용 가능한 모델": every model the server listed, inside a fixed-height box that scrolls
+ * on its own. An OpenAI-compatible endpoint can return 100+ ids, so the list must never be
+ * cut off (the old version showed the first 12 and dropped the rest) and must not push the
+ * rest of the settings page away. The surrounding screen scrolls; this box scrolls inside it.
+ */
 @Composable
 private fun ModelPicker(
     models: List<String>,
     selected: String,
-    onSelect: (String) -> Unit
+    onSelect: (String) -> Unit,
+    onLoadModels: () -> Unit,
+    isLoading: Boolean
 ) {
-    if (models.isEmpty()) return
-
-    Text(
-        text = "사용 가능한 모델",
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-
-    models.take(12).forEach { model ->
-        val isSelected = model == selected
-        Surface(
-            onClick = { onSelect(model) },
-            shape = RoundedCornerShape(10.dp),
-            color = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = model,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f)
-                )
-                if (isSelected) {
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = "선택됨",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-            }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = "사용 가능한 모델",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        if (models.isNotEmpty()) {
+            Text(
+                text = "${models.size}개 · 스크롤",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
+
+    if (models.isEmpty()) {
+        Text(
+            text = "위의 '모델 목록'을 누르면 서버에서 모델 목록을 가져옵니다.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedButton(onClick = onLoadModels, enabled = !isLoading) {
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Text("모델 목록 불러오기")
+            }
+        }
+        return
+    }
+
+    ScrollableModelList(
+        models = models,
+        selected = selected,
+        onSelect = { model -> model?.let(onSelect) },
+        height = MODEL_LIST_BOX_HEIGHT
+    )
 }

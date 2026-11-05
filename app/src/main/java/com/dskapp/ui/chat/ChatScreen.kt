@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -25,12 +26,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuOpen
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -69,6 +68,7 @@ import com.dskapp.data.chat.ConversationEntity
 import com.dskapp.data.export.ExportFormat
 import com.dskapp.data.export.ExportService
 import com.dskapp.ui.components.ChatComposer
+import com.dskapp.ui.components.ModelMenuItems
 import com.dskapp.ui.voice.VoiceInputController
 import java.io.File
 import kotlinx.coroutines.launch
@@ -502,29 +502,25 @@ private fun ThreadModelPicker(state: ChatUiState, onSelect: (String?) -> Unit) {
                 modifier = Modifier.size(16.dp)
             )
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text("기본 모델 (${state.defaultModel.substringAfterLast('/')})") },
-                onClick = {
-                    onSelect(null)
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            // Bounded height: the server may list 100+ models, and an unconstrained menu
+            // would run off the screen. Past this the menu scrolls.
+            modifier = Modifier.heightIn(max = MODEL_MENU_MAX_HEIGHT)
+        ) {
+            ModelMenuItems(
+                models = state.knownModels,
+                selected = state.threadModel,
+                onSelect = { model ->
+                    onSelect(model)
                     expanded = false
                 },
-                trailingIcon = {
-                    if (state.threadModel == null) Icon(Icons.Filled.Check, contentDescription = "선택됨")
-                }
+                defaultLabel = "기본 모델 (${state.defaultModel.substringAfterLast('/')})"
             )
-            state.knownModels.forEach { model ->
-                DropdownMenuItem(
-                    text = { Text(model, style = MaterialTheme.typography.bodySmall) },
-                    onClick = {
-                        onSelect(model)
-                        expanded = false
-                    },
-                    trailingIcon = {
-                        if (state.threadModel == model) Icon(Icons.Filled.Check, contentDescription = "선택됨")
-                    }
-                )
-            }
         }
     }
 }
+
+/** Cap for the model menu; taller than this would be hard to reach on a phone. */
+private val MODEL_MENU_MAX_HEIGHT = 320.dp
