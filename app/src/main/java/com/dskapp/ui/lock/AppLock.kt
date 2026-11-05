@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.dskapp.data.log.ErrorLog
 
 /**
  * Fingerprint / face / screen-lock check for the optional app lock.
@@ -61,18 +62,26 @@ object AppLock {
             onResult(true)
             return
         }
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> prompt(activity, onResult) {
-                setAllowedAuthenticators(
-                    BiometricManager.Authenticators.BIOMETRIC_WEAK or
-                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                )
+        try {
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> prompt(activity, onResult) {
+                    setAllowedAuthenticators(
+                        BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    )
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> prompt(activity, onResult) {
+                    @Suppress("DEPRECATION")
+                    setDeviceCredentialAllowed(true)
+                }
+                else -> legacyCredentialScreen(activity, onResult)
             }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q -> prompt(activity, onResult) {
-                @Suppress("DEPRECATION")
-                setDeviceCredentialAllowed(true)
-            }
-            else -> legacyCredentialScreen(activity, onResult)
+        } catch (error: RuntimeException) {
+            // A prompt that cannot be shown must not crash the app on every launch (that
+            // locks the user out for good); the system PIN/pattern screen still works.
+            ErrorLog.record("app-lock", "잠금 해제 창을 열지 못했습니다: ${error.message}", error)
+            runCatching { legacyCredentialScreen(activity, onResult) }
+                .onFailure { ErrorLog.record("app-lock", "휴대폰 잠금 화면도 열지 못했습니다: ${it.message}", it) }
         }
     }
 

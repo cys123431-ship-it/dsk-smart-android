@@ -3,6 +3,9 @@ package com.dskapp.data.ai
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * OpenAI-compatible chat completions wire format.
@@ -25,15 +28,37 @@ internal data class StreamOptions(
 )
 
 /**
- * A message's content is either a plain string (simple turns) or a list of parts
- * (text + images). Modelling it as a list always keeps the encoder simple and matches the
- * provider's `content: [{type:"text"...},{type:"image_url"...}]` shape.
+ * A message's content is a plain string for text-only turns and a list of parts
+ * (`[{type:"text"...},{type:"image_url"...}]`) only when images are attached.
+ *
+ * Why not always a list: River's DeepSeek backend turns list content into its literal JSON
+ * text before templating, so the model saw its own earlier turns as
+ * `[{"text": "...", "type": "text"}]` and started writing that into new answers.
  */
 @Serializable
 internal data class ChatRequestMessage(
     val role: String,
-    val content: List<ChatContentPart>
+    val content: JsonElement
 )
+
+/** Builds a request message; null when there is nothing to send (no text and no images). */
+internal fun chatRequestMessage(
+    role: String,
+    text: String,
+    imageDataUris: List<String> = emptyList()
+): ChatRequestMessage? {
+    if (imageDataUris.isEmpty()) {
+        return if (text.isBlank()) null else ChatRequestMessage(role, JsonPrimitive(text))
+    }
+    val parts = buildList {
+        if (text.isNotBlank()) add(ChatContentPart.text(text))
+        imageDataUris.forEach { add(ChatContentPart.image(it)) }
+    }
+    return ChatRequestMessage(
+        role,
+        JsonArray(parts.map { ChatJson.encodeToJsonElement(ChatContentPart.serializer(), it) })
+    )
+}
 
 @Serializable
 internal data class ChatContentPart(

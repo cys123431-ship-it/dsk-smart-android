@@ -244,24 +244,15 @@ class OpenAiCompatibleClient(
     ) = ChatRequest(
         model = model?.takeIf { it.isNotBlank() } ?: config.model,
         messages = buildList {
-            if (systemPrompt.isNotBlank()) {
-                add(ChatRequestMessage("system", listOf(ChatContentPart.text(systemPrompt))))
-            }
+            chatRequestMessage("system", systemPrompt)?.let(::add)
             messages.forEach { message ->
-                add(
-                    ChatRequestMessage(
-                        role = when (message.role) {
-                            AiRole.USER -> "user"
-                            AiRole.ASSISTANT -> "assistant"
-                        },
-                        content = buildList {
-                            if (message.text.isNotBlank()) add(ChatContentPart.text(message.text))
-                            message.images.forEach { add(ChatContentPart.image(it.toDataUri())) }
-                        }
-                    )
-                )
+                val role = when (message.role) {
+                    AiRole.USER -> "user"
+                    AiRole.ASSISTANT -> "assistant"
+                }
+                chatRequestMessage(role, message.text, message.images.map { it.toDataUri() })?.let(::add)
             }
-        }.filter { it.content.isNotEmpty() },
+        },
         maxTokens = maxTokens,
         stream = stream,
         streamOptions = if (stream && includeUsage) StreamOptions(includeUsage = true) else null
