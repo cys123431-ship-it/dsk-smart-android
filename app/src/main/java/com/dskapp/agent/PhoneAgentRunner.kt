@@ -62,6 +62,7 @@ class PhoneAgentRunner(private val service: DskAccessibilityService) {
             val reply = ai.complete(
                 systemPrompt = AgentProtocol.SYSTEM_PROMPT,
                 messages = listOf(AiMessage(AiRole.USER, message, images.orEmpty())),
+                // Reasoning models spend part of this on thinking before the JSON action.
                 maxTokens = REPLY_TOKENS,
                 model = model
             )
@@ -126,7 +127,7 @@ class PhoneAgentRunner(private val service: DskAccessibilityService) {
             "(지금은 DSK 스마트 화면이라 읽지 않습니다. open_app 으로 필요한 앱을 열거나 home 으로 시작하세요.)"
         const val MAX_BAD_REPLIES = 3
         const val HISTORY_LINES = 12
-        const val REPLY_TOKENS = 600
+        const val REPLY_TOKENS = 1200
         /** Below this many readable elements the screen is probably a picture (map, game). */
         const val FEW_ELEMENTS = 5
     }

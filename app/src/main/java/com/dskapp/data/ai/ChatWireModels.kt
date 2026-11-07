@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -18,7 +19,13 @@ internal data class ChatRequest(
     @SerialName("max_tokens") val maxTokens: Int? = null,
     val stream: Boolean = false,
     val temperature: Double? = null,
-    @SerialName("stream_options") val streamOptions: StreamOptions? = null
+    @SerialName("stream_options") val streamOptions: StreamOptions? = null,
+    /**
+     * Turn off hidden reasoning where the provider supports it (vLLM / SGLang style servers
+     * accept this; others ignore unknown fields). Used only for the retry after a
+     * thinking-budget failure, never for the first attempt.
+     */
+    @SerialName("chat_template_kwargs") val chatTemplateKwargs: JsonObject? = null
 )
 
 /** Asks the server to append a final chunk carrying token usage to a streamed answer. */
@@ -88,19 +95,37 @@ internal data class ChatResponse(
 ) {
     fun text(): String =
         choices.firstOrNull()?.message?.content.orEmpty().trim()
+
+    /** The model's thinking when the server returned it instead of (or before) an answer. */
+    fun thinkingText(): String {
+        val message = choices.firstOrNull()?.message ?: return ""
+        return listOfNotNull(message.reasoningContent, message.thinking, message.reasoning)
+            .joinToString("\n\n")
+            .trim()
+    }
+
+    /** True when the provider stopped because the token budget ran out. */
+    fun hitTokenLimit(): Boolean =
+        choices.firstOrNull()?.finishReason.equals("length", ignoreCase = true)
 }
 
 @Serializable
 internal data class ChatChoice(
     val index: Int = 0,
     val message: ChatResponseMessage? = null,
-    val finishReason: String? = null
+    @SerialName("finish_reason") val finishReason: String? = null
 )
 
 @Serializable
 internal data class ChatResponseMessage(
     val role: String? = null,
-    val content: String? = null
+    val content: String? = null,
+    /** DeepSeek-style non-streamed thinking. */
+    @SerialName("reasoning_content") val reasoningContent: String? = null,
+    /** OpenRouter-style non-streamed thinking. */
+    val reasoning: String? = null,
+    /** Qwen / vLLM style non-streamed thinking. */
+    val thinking: String? = null
 )
 
 @Serializable
@@ -126,7 +151,7 @@ internal data class ChatStreamChunk(
 internal data class ChatStreamChoice(
     val index: Int = 0,
     val delta: ChatStreamDelta? = null,
-    val finishReason: String? = null
+    @SerialName("finish_reason") val finishReason: String? = null
 )
 
 @Serializable
@@ -136,7 +161,9 @@ internal data class ChatStreamDelta(
     /** DeepSeek-style thinking stream. */
     @SerialName("reasoning_content") val reasoningContent: String? = null,
     /** OpenRouter-style thinking stream. */
-    val reasoning: String? = null
+    val reasoning: String? = null,
+    /** Qwen / vLLM style thinking stream. */
+    val thinking: String? = null
 )
 
 @Serializable

@@ -647,7 +647,9 @@ class ChatViewModel(
      * and many tokens. Older attachments are replaced by a one-line note.
      */
     private suspend fun toAiMessages(recent: List<MessageEntity>): List<AiMessage> {
-        val attachmentWindowStart = recent.size - ATTACHMENT_WINDOW_MESSAGES
+        // Never negative: with fewer than ATTACHMENT_WINDOW_MESSAGES stored messages every
+        // index must count as inside the window (was `size - 4`, i.e. -3 for a new thread).
+        val attachmentWindowStart = (recent.size - ATTACHMENT_WINDOW_MESSAGES).coerceAtLeast(0)
 
         return recent.mapIndexedNotNull { index, entity ->
             val allAttachments = AttachmentCodec.decode(entity.attachmentsJson)
@@ -704,7 +706,9 @@ class ChatViewModel(
             val result = aiClient.complete(
                 systemPrompt = Prompts.TITLE_PROMPT,
                 messages = listOf(AiMessage(AiRole.USER, firstMessage)),
-                maxTokens = 64,
+                // 64 was too small for reasoning models: thinking ate the budget and the
+                // title silently fell back to the message prefix (or came back empty).
+                maxTokens = TITLE_MAX_TOKENS,
                 model = _uiState.value.threadModel
             )
             val generated = (result as? AiResult.Success)?.text
@@ -748,7 +752,8 @@ class ChatViewModel(
         /** Only the latest messages resend their photos/files (about the last two turns). */
         private const val ATTACHMENT_WINDOW_MESSAGES = 4
 
-        private const val SUMMARY_MAX_TOKENS = 1024
+        private const val SUMMARY_MAX_TOKENS = 2048
+        private const val TITLE_MAX_TOKENS = 512
         private const val SUMMARY_CHARS_PER_MESSAGE = 4000
 
         fun factory(

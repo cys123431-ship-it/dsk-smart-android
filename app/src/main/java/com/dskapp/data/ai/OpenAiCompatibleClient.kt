@@ -64,17 +64,26 @@ class OpenAiCompatibleClient(
         try {
             client.newCall(request).execute().use { response ->
                 val payload = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    return@withContext AiResult.Failure(parseError(response.code, payload))
+                if (response.isSuccessful) return@withContext parseCompleteResponse(payload)
+
+                // Reasoning models (DeepSeek / Kimi / GLM) can spend the whole max_tokens
+                // budget on hidden thinking and fail with "no room for content". Asking the
+                // provider to skip thinking makes a retry succeed. One retry only.
+                if (isThinkingBudgetFailure(response.code, payload)) {
+                    val retry = chatRequest(
+                        config,
+                        buildRequest(
+                            config, model, systemPrompt, messages, maxTokens,
+                            stream = false, includeUsage = false, disableThinking = true
+                        ),
+                        accept = "application/json"
+                    )
+                    client.newCall(retry).execute().use { second ->
+                        val secondPayload = second.body?.string().orEmpty()
+                        if (second.isSuccessful) return@withContext parseCompleteResponse(secondPayload)
+                    }
                 }
-                val parsed = ChatJson.decodeFromString(ChatResponse.serializer(), payload)
-                val usage = parsed.usage?.toTokenUsage()?.also(usageRecorder)
-                val text = parsed.text()
-                if (text.isBlank()) {
-                    AiResult.Failure(AiError.Unexpected("응답이 비어 있습니다."))
-                } else {
-                    AiResult.Success(text, usage)
-                }
+                AiResult.Failure(parseError(response.code, payload))
             }
         } catch (e: CancellationException) {
             throw e
@@ -83,6 +92,44 @@ class OpenAiCompatibleClient(
         } catch (e: Exception) {
             AiResult.Failure(AiError.Unexpected(e.message ?: e::class.simpleName ?: "알 수 없는 오류"))
         }
+    }
+
+    /**
+     * Decodes a non-streaming 200 response. A reply with no visible text is reported with
+     * the real cause (thinking-only reply) instead of a bare "응답이 비어 있습니다",
+     * which is what made "연결 테스트" look broken while normal chat kept working.
+     */
+    private fun parseCompleteResponse(payload: String): AiResult {
+        val parsed = runCatching {
+            ChatJson.decodeFromString(ChatResponse.serializer(), payload)
+        }.getOrElse { error ->
+            return AiResult.Failure(
+                AiError.Unexpected("AI 응답 형식을 해석하지 못했습니다: ${error.message ?: "unknown"}")
+            )
+        }
+        val usage = parsed.usage?.toTokenUsage()?.also(usageRecorder)
+        val text = parsed.text()
+        if (text.isNotBlank()) return AiResult.Success(text, usage)
+
+        val thinkingOnly = parsed.thinkingText().isNotBlank()
+        return AiResult.Failure(
+            AiError.Unexpected(
+                if (thinkingOnly) {
+                    "AI 모델이 생각만 하고 답을 내지 않았습니다. " +
+                        "응답 길이(max_tokens)가 추론 토큰으로 모두 쓰였을 수 있습니다."
+                } else {
+                    "AI 모델이 빈 응답을 보냈습니다. 모델 이름과 서버 응답을 확인해 주세요."
+                }
+            )
+        )
+    }
+
+    /** Narrow check: only retry when the provider body blames the token budget or thinking. */
+    private fun isThinkingBudgetFailure(status: Int, payload: String): Boolean {
+        if (status != 400 && status != 422) return false
+        val lower = payload.lowercase()
+        return lower.contains("max_tokens") || lower.contains("finish_reason") ||
+            lower.contains("reasoning") || lower.contains("thinking")
     }
 
     override suspend fun listModels(): Result<List<String>> = withContext(Dispatchers.IO) {
@@ -181,7 +228,13 @@ class OpenAiCompatibleClient(
             call.execute().use { okResponse ->
                 if (!okResponse.isSuccessful) {
                     val payload = okResponse.body?.string().orEmpty()
-                    if (includeUsage && okResponse.code == 400) return true
+                    // Only a rejection of stream_options justifies the retry; any other 400
+                    // (bad model id, bad payload) must still surface its own message.
+                    if (includeUsage && okResponse.code == 400 &&
+                        payload.contains("stream_options", ignoreCase = true)
+                    ) {
+                        return true
+                    }
                     onError(parseError(okResponse.code, payload))
                     return false
                 }
@@ -202,7 +255,7 @@ class OpenAiCompatibleClient(
                     }.getOrNull() ?: continue
 
                     val delta = chunk.choices.firstOrNull()?.delta
-                    (delta?.reasoningContent ?: delta?.reasoning)?.let { thought ->
+                    (delta?.reasoningContent ?: delta?.thinking ?: delta?.reasoning)?.let { thought ->
                         if (thought.isNotEmpty()) onReasoning(thought)
                     }
                     delta?.content?.let { text ->
@@ -224,6 +277,8 @@ class OpenAiCompatibleClient(
         return false
     }
 
+    override fun testHttpClient(): OkHttpClient = client
+
     private fun chatRequest(config: ProviderConfig, body: ChatRequest, accept: String): Request =
         Request.Builder()
             .url(config.endpoint("chat/completions"))
@@ -240,11 +295,15 @@ class OpenAiCompatibleClient(
         messages: List<AiMessage>,
         maxTokens: Int,
         stream: Boolean,
-        includeUsage: Boolean
+        includeUsage: Boolean,
+        disableThinking: Boolean = false
     ) = ChatRequest(
         model = model?.takeIf { it.isNotBlank() } ?: config.model,
         messages = buildList {
-            chatRequestMessage("system", systemPrompt)?.let(::add)
+            // "no_think" is the Qwen/GLM convention; harmless for models that ignore it and
+            // the cheapest way to keep a one-word answer (connection test, title) short.
+            val system = if (disableThinking) systemPrompt + "\n\n/no_think" else systemPrompt
+            chatRequestMessage("system", system)?.let(::add)
             messages.forEach { message ->
                 val role = when (message.role) {
                     AiRole.USER -> "user"
@@ -255,7 +314,15 @@ class OpenAiCompatibleClient(
         },
         maxTokens = maxTokens,
         stream = stream,
-        streamOptions = if (stream && includeUsage) StreamOptions(includeUsage = true) else null
+        streamOptions = if (stream && includeUsage) StreamOptions(includeUsage = true) else null,
+        chatTemplateKwargs = if (disableThinking) {
+            kotlinx.serialization.json.buildJsonObject {
+                put("enable_thinking", kotlinx.serialization.json.JsonPrimitive(false))
+                put("thinking", kotlinx.serialization.json.JsonPrimitive(false))
+            }
+        } else {
+            null
+        }
     )
 
     /** Maps an HTTP failure to a typed [AiError], preferring the provider's own message. */

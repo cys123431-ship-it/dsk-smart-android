@@ -42,6 +42,12 @@ interface AiClient {
     /** Lists model IDs from GET /models; empty when the server does not support it. */
     suspend fun listModels(): Result<List<String>>
 
+    /**
+     * HTTP client used for one-off checks (the Settings "연결 테스트") so a test against
+     * not-yet-saved values reuses the same connection pool, timeouts and TLS config.
+     */
+    fun testHttpClient(): okhttp3.OkHttpClient
+
     companion object {
         const val DEFAULT_MAX_TOKENS = 8192
     }

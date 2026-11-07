@@ -56,9 +56,16 @@ class SettingsRepository(context: Context) {
      */
     fun providerConfig(): ProviderConfig {
         val settings = readState()
+        // readApiKey() drops an undecryptable blob, but readState() still reports hasApiKey
+        // from the prefs file. Reconcile here so the UI stops claiming "설정 완료" and asks
+        // for the key again instead of failing every request with 401.
+        val key = readApiKey()
+        if (key.isEmpty() && settings.hasApiKey) {
+            _state.value = _state.value.copy(hasApiKey = false)
+        }
         return ProviderConfig(
             baseUrl = settings.baseUrl,
-            apiKey = readApiKey(),
+            apiKey = key,
             model = settings.model
         )
     }
@@ -130,6 +137,12 @@ class SettingsRepository(context: Context) {
     /** Package names the agent may operate even though they look like banking/payment apps. */
     fun saveAgentAllowed(packages: Set<String>) {
         prefs.edit { putStringSet(KEY_AGENT_ALLOWED, packages) }
+        refresh()
+    }
+
+    /** Package names the agent must never touch, on top of the built-in finance keywords. */
+    fun saveAgentBlocked(packages: Set<String>) {
+        prefs.edit { putStringSet(KEY_AGENT_BLOCKED, packages) }
         refresh()
     }
 
@@ -231,7 +244,10 @@ class SettingsRepository(context: Context) {
                 ?: AgentLevel.CONTROL,
             agentMaxSteps = prefs.getInt(KEY_AGENT_MAX_STEPS, DEFAULT_AGENT_STEPS),
             agentScreenshots = prefs.getBoolean(KEY_AGENT_SCREENSHOTS, false),
-            agentAllowed = prefs.getStringSet(KEY_AGENT_ALLOWED, null).orEmpty().toSet()
+            agentAllowed = prefs.getStringSet(KEY_AGENT_ALLOWED, null).orEmpty().toSet(),
+            // Previously hard-coded to emptySet(): the allow-list had nothing to override and
+            // a user could never block an extra package beyond the built-in keyword list.
+            agentBlocked = prefs.getStringSet(KEY_AGENT_BLOCKED, null).orEmpty().toSet()
         )
     }
 
@@ -328,6 +344,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_AGENT_MAX_STEPS = "agent_max_steps"
         private const val KEY_AGENT_SCREENSHOTS = "agent_screenshots"
         private const val KEY_AGENT_ALLOWED = "agent_allowed"
+        private const val KEY_AGENT_BLOCKED = "agent_blocked"
         private const val KEY_USAGE_MONTH = "usage_month"
         private const val KEY_USAGE_IN = "usage_prompt_tokens"
         private const val KEY_USAGE_OUT = "usage_completion_tokens"

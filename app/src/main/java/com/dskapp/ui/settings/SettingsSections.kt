@@ -429,10 +429,12 @@ fun AgentSection(
     maxSteps: Int,
     screenshots: Boolean,
     allowedText: String,
+    blockedText: String,
     onLevel: (AgentLevel) -> Unit,
     onMaxSteps: (Int) -> Unit,
     onScreenshots: (Boolean) -> Unit,
-    onSaveAllowed: (String) -> Unit
+    onSaveAllowed: (String) -> Unit,
+    onSaveBlocked: (String) -> Unit
 ) {
     val context = LocalContext.current
     var refresh by remember { mutableStateOf(0) }
@@ -440,6 +442,7 @@ fun AgentSection(
     val enabled = remember(refresh) { AgentBridge.isEnabled }
     var steps by remember(maxSteps) { mutableStateOf(maxSteps.toFloat()) }
     var allowed by rememberSaveable(allowedText) { mutableStateOf(allowedText) }
+    var blocked by rememberSaveable(blockedText) { mutableStateOf(blockedText) }
 
     Text("폰 조작 (스마트폰 유즈)", style = MaterialTheme.typography.titleMedium)
     Text(
@@ -518,4 +521,18 @@ fun AgentSection(
         modifier = Modifier.fillMaxWidth()
     )
     OutlinedButton(onClick = { onSaveAllowed(allowed) }) { Text("허용 목록 저장") }
+
+    OutlinedTextField(
+        value = blocked,
+        onValueChange = { blocked = it },
+        label = { Text("항상 차단할 앱 패키지 (줄마다 하나)") },
+        placeholder = { Text("com.example.app") },
+        supportingText = {
+            Text("기본 차단(은행·결제·인증 키워드)에 더해 이 앱들은 절대 조작하지 않습니다.")
+        },
+        minLines = 2,
+        maxLines = 4,
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedButton(onClick = { onSaveBlocked(blocked) }) { Text("차단 목록 저장") }
 }

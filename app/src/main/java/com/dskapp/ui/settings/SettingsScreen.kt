@@ -262,10 +262,12 @@ fun SettingsScreen(
                 maxSteps = state.agentMaxSteps,
                 screenshots = state.agentScreenshots,
                 allowedText = state.agentAllowedText,
+                blockedText = state.agentBlockedText,
                 onLevel = viewModel::setAgentLevel,
                 onMaxSteps = viewModel::setAgentMaxSteps,
                 onScreenshots = viewModel::setAgentScreenshots,
-                onSaveAllowed = viewModel::saveAgentAllowed
+                onSaveAllowed = viewModel::saveAgentAllowed,
+                onSaveBlocked = viewModel::saveAgentBlocked
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))

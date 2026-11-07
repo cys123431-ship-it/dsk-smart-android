@@ -54,6 +54,7 @@ data class SettingsUiState(
     val agentMaxSteps: Int = 25,
     val agentScreenshots: Boolean = false,
     val agentAllowedText: String = "",
+    val agentBlockedText: String = "",
     val errorCount: Int = 0,
     val lastErrorTime: String? = null
 )
@@ -94,6 +95,7 @@ class SettingsViewModel(
 
     init {
         refreshErrorLog()
+        verifyStoredKey()
         // Usage and stored settings change from other screens (chat writes tokens, the theme
         // can be toggled elsewhere); recombine so cost and appearance stay in sync without
         // the screen re-reading the repository on every recomposition.
@@ -112,6 +114,7 @@ class SettingsViewModel(
                             agentMaxSteps = settings.agentMaxSteps,
                             agentScreenshots = settings.agentScreenshots,
                             agentAllowedText = settings.agentAllowed.sorted().joinToString("\n"),
+                            agentBlockedText = settings.agentBlocked.sorted().joinToString("\n"),
                             usage = usage,
                             estimatedCostUsd = settings.costUsd(
                                 usage.promptTokens,
@@ -121,6 +124,25 @@ class SettingsViewModel(
                     }
                 }
         }
+    }
+
+    /**
+     * The prefs file only says a key blob exists. If the Keystore key was invalidated (device
+     * restore, lock-screen change on some ROMs) the blob can no longer be decrypted, and every
+     * request would fail with 401 while the screen still claimed "저장된 키 사용 중".
+     * Decrypt once on entry and tell the user clearly when it is gone.
+     */
+    private fun verifyStoredKey() {
+        if (!repository.state.value.hasApiKey) return
+        val key = repository.providerConfig().apiKey
+        if (key.isNotEmpty()) return
+        _uiState.update {
+            it.copy(
+                hasStoredKey = false,
+                message = "저장된 API 키를 읽을 수 없습니다(기기 보안 키가 바뀜). API 키를 다시 입력해 주세요."
+            )
+        }
+        ErrorLog.record("settings", "stored API key could not be decrypted; asked the user to re-enter it")
     }
 
     fun onBaseUrlChange(value: String) {
@@ -203,26 +225,72 @@ class SettingsViewModel(
         }
     }
 
-    /** Sends a one-token prompt to verify URL + key + model together. */
+    /**
+     * Verifies URL + key + model together with one short call.
+     *
+     * Two details keep this in step with normal chat, which is why the old version could
+     * fail while chat worked: (1) the token budget must leave room for a reasoning model's
+     * hidden thinking, and (2) the *screen's* values are tested even before "저장", falling
+     * back to the stored key when the field is left blank, otherwise the test used the
+     * previous endpoint while the user was editing a new one.
+     */
     fun testConnection() {
+        val state = _uiState.value
+        if (state.isTesting) return
+        if (state.baseUrl.isBlank() || state.model.isBlank()) {
+            _uiState.update { it.copy(message = "서버 주소와 모델을 먼저 입력해 주세요.") }
+            return
+        }
         viewModelScope.launch {
-            _uiState.update { it.copy(isTesting = true, message = null) }
-            val result = aiClient.complete(
-                systemPrompt = "당신은 연결 테스트 도우미입니다.",
-                messages = listOf(
-                    AiMessage(
-                        role = AiRole.USER,
-                        text = "연결 테스트. '연결 성공'이라고만 답하세요."
+            _uiState.update { it.copy(isTesting = true, message = "연결 테스트 중…") }
+
+            // Use what is typed on screen; an empty key field means "keep the stored key".
+            val typedKey = state.apiKey.trim()
+            val effectiveKey = typedKey.ifBlank { repository.providerConfig().apiKey }
+            val testClient = OpenAiCompatibleClient(
+                client = aiClient.testHttpClient(),
+                configProvider = {
+                    com.dskapp.data.ai.ProviderConfig(
+                        baseUrl = state.baseUrl.trim(),
+                        apiKey = effectiveKey,
+                        model = state.model.trim()
                     )
-                ),
-                maxTokens = 16
+                }
             )
+
+            val startedAt = System.currentTimeMillis()
+            val result = testClient.complete(
+                systemPrompt = "당신은 연결 테스트 도우미입니다. 인사 없이 짧게 답하세요.",
+                messages = listOf(
+                    AiMessage(role = AiRole.USER, text = "연결 확인. '연결 성공'이라고만 답하세요.")
+                ),
+                // Reasoning models burn the budget on thinking first: 16 tokens was always
+                // empty for DeepSeek / Kimi / GLM and showed up as a failed test.
+                maxTokens = 512
+            )
+            val elapsed = System.currentTimeMillis() - startedAt
+
             _uiState.update {
                 it.copy(
                     isTesting = false,
                     message = when (result) {
-                        is AiResult.Success -> "연결 성공: ${result.text.take(60)}"
-                        is AiResult.Failure -> result.error.userMessage
+                        is AiResult.Success -> {
+                            val usage = result.usage
+                            buildString {
+                                append("연결 성공 (").append(elapsed).append("ms)")
+                                append(" · 모델 ").append(state.model.trim())
+                                if (usage != null) {
+                                    append(" · 토큰 ").append(usage.promptTokens).append('+')
+                                        .append(usage.completionTokens)
+                                }
+                                val preview = result.text.replace('\n', ' ').trim().take(40)
+                                if (preview.isNotEmpty()) append(" · \"").append(preview).append('"')
+                            }
+                        }
+                        is AiResult.Failure -> {
+                            ErrorLog.record("test", "connection test failed: ${result.error}")
+                            "연결 실패: " + result.error.userMessage
+                        }
                     }
                 )
             }
@@ -294,6 +362,13 @@ class SettingsViewModel(
         val packages = text.split('\n', ',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         repository.saveAgentAllowed(packages)
         _uiState.update { it.copy(message = "허용 목록을 저장했습니다 (${packages.size}개).") }
+    }
+
+    /** Extra packages the agent must never touch (on top of the built-in finance keywords). */
+    fun saveAgentBlocked(text: String) {
+        val packages = text.split('\n', ',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        repository.saveAgentBlocked(packages)
+        _uiState.update { it.copy(message = "차단 목록을 저장했습니다 (${packages.size}개).") }
     }
 
     /** The lock needs a phone PIN / pattern / password to fall back on. */
