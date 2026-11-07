@@ -41,6 +41,11 @@ import com.dskapp.ui.chat.SearchScreen
 import com.dskapp.ui.chat.SearchViewModel
 import com.dskapp.ui.settings.SettingsScreen
 import com.dskapp.ui.settings.SettingsViewModel
+import com.dskapp.ui.remote.RemoteChatScreen
+import com.dskapp.ui.remote.RemoteChatViewModel
+import com.dskapp.ui.remote.RemoteSessionsScreen
+import com.dskapp.ui.remote.RemoteSessionsViewModel
+import androidx.navigation.toRoute
 import com.dskapp.ui.chat.StartAction
 import com.dskapp.ui.share.LaunchAction
 import com.dskapp.ui.share.LaunchInbox
@@ -60,6 +65,13 @@ private data object BookmarksRoute
 
 @Serializable
 private data object ScheduleRoute
+
+@Serializable
+private data object RemoteSessionsRoute
+
+/** [sessionId] empty starts a new PC session; otherwise that goose chat is loaded. */
+@Serializable
+private data class RemoteChatRoute(val sessionId: String = "", val title: String = "")
 
 /**
  * App shell.
@@ -185,7 +197,30 @@ fun DskAppNavHost() {
                     )
                 ),
                 onBack = { navController.popBackStack() },
-                onOpenSchedule = { navController.navigate(ScheduleRoute) }
+                onOpenSchedule = { navController.navigate(ScheduleRoute) },
+                onOpenRemoteSessions = { navController.navigate(RemoteSessionsRoute) }
+            )
+        }
+
+        composable<RemoteSessionsRoute> {
+            RemoteSessionsScreen(
+                viewModel = viewModel(factory = RemoteSessionsViewModel.factory(settingsRepository, aiClient)),
+                onOpenSession = { session ->
+                    navController.navigate(RemoteChatRoute(session.sessionId, session.title))
+                },
+                onOpenNewSession = { navController.navigate(RemoteChatRoute()) },
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable<RemoteChatRoute> { entry ->
+            val route = entry.toRoute<RemoteChatRoute>()
+            RemoteChatScreen(
+                viewModel = viewModel(factory = RemoteChatViewModel.factory(settingsRepository, aiClient)),
+                title = route.title,
+                loadSessionId = route.sessionId.ifBlank { null },
+                onBack = { navController.popBackStack() },
+                onOpenSessions = { navController.navigate(RemoteSessionsRoute) }
             )
         }
 

@@ -38,6 +38,9 @@ class SettingsRepository(context: Context) {
 
     private val cipher = KeystoreCipher()
 
+    /** Separate Keystore alias so clearing the AI key never wipes the remote secret. */
+    private val remoteCipher = KeystoreCipher(REMOTE_KEY_ALIAS)
+
     private val _state = MutableStateFlow(readState())
     val state: StateFlow<AppSettings> = _state.asStateFlow()
 
@@ -146,6 +149,42 @@ class SettingsRepository(context: Context) {
         refresh()
     }
 
+    /** PC goose remote: server address, cwd, permission mode and (encrypted) secret key. */
+    fun saveRemote(serverUrl: String, secretKey: String, cwd: String, mode: String) {
+        val trimmedSecret = secretKey.trim()
+        val encrypted = if (trimmedSecret.isEmpty()) null else remoteCipher.encrypt(trimmedSecret)
+        prefs.edit {
+            putString(KEY_REMOTE_URL, serverUrl.trim().trimEnd('/'))
+            if (encrypted == null) remove(KEY_REMOTE_SECRET_ENC) else putString(KEY_REMOTE_SECRET_ENC, encrypted)
+            putString(KEY_REMOTE_CWD, cwd.trim())
+            putString(KEY_REMOTE_MODE, mode.trim())
+        }
+        refresh()
+    }
+
+    fun saveRemoteCwd(cwd: String) {
+        prefs.edit { putString(KEY_REMOTE_CWD, cwd.trim()) }
+        refresh()
+    }
+
+    fun saveRemoteMode(mode: String) {
+        prefs.edit { putString(KEY_REMOTE_MODE, mode.trim()) }
+        refresh()
+    }
+
+    /** Decrypts the remote secret on demand; empty when none is stored or it is unreadable. */
+    fun remoteSecret(): String {
+        val blob = prefs.getString(KEY_REMOTE_SECRET_ENC, null) ?: return ""
+        val plain = remoteCipher.decrypt(blob)
+        if (plain == null) {
+            prefs.edit { remove(KEY_REMOTE_SECRET_ENC) }
+            remoteCipher.deleteKey()
+            refresh()
+            return ""
+        }
+        return plain
+    }
+
     fun saveAppLock(enabled: Boolean) {
         prefs.edit { putBoolean(KEY_APP_LOCK, enabled) }
         refresh()
@@ -247,7 +286,11 @@ class SettingsRepository(context: Context) {
             agentAllowed = prefs.getStringSet(KEY_AGENT_ALLOWED, null).orEmpty().toSet(),
             // Previously hard-coded to emptySet(): the allow-list had nothing to override and
             // a user could never block an extra package beyond the built-in keyword list.
-            agentBlocked = prefs.getStringSet(KEY_AGENT_BLOCKED, null).orEmpty().toSet()
+            agentBlocked = prefs.getStringSet(KEY_AGENT_BLOCKED, null).orEmpty().toSet(),
+            remoteUrl = prefs.getString(KEY_REMOTE_URL, null).orEmpty(),
+            hasRemoteSecret = prefs.contains(KEY_REMOTE_SECRET_ENC),
+            remoteCwd = prefs.getString(KEY_REMOTE_CWD, null).orEmpty(),
+            remoteMode = prefs.getString(KEY_REMOTE_MODE, null)?.takeIf { it.isNotBlank() } ?: "approve"
         )
     }
 
@@ -302,9 +345,19 @@ class SettingsRepository(context: Context) {
         val agentMaxSteps: Int = DEFAULT_AGENT_STEPS,
         val agentScreenshots: Boolean = false,
         val agentAllowed: Set<String> = emptySet(),
-        val agentBlocked: Set<String> = emptySet()
+        val agentBlocked: Set<String> = emptySet(),
+        /** PC goose (Agent Client Protocol) server, e.g. "ws://100.64.0.5:3284/acp". */
+        val remoteUrl: String = "",
+        val hasRemoteSecret: Boolean = false,
+        /** Working directory the remote agent opens. Empty = the app sends ~/goose default. */
+        val remoteCwd: String = "",
+        /** ACP mode id: auto / approve / smart_approve / chat. */
+        val remoteMode: String = "approve"
     ) {
         val isConfigured: Boolean get() = hasApiKey && baseUrl.isNotBlank() && model.isNotBlank()
+
+        val isRemoteConfigured: Boolean
+            get() = remoteUrl.isNotBlank() && hasRemoteSecret
 
         /** Cost in USD for the given tokens, or null when no price is set. */
         fun costUsd(promptTokens: Long, completionTokens: Long): Double? {
@@ -345,6 +398,10 @@ class SettingsRepository(context: Context) {
         private const val KEY_AGENT_SCREENSHOTS = "agent_screenshots"
         private const val KEY_AGENT_ALLOWED = "agent_allowed"
         private const val KEY_AGENT_BLOCKED = "agent_blocked"
+        private const val KEY_REMOTE_URL = "remote_goose_url"
+        private const val KEY_REMOTE_SECRET_ENC = "remote_goose_secret_enc"
+        private const val KEY_REMOTE_CWD = "remote_goose_cwd"
+        private const val KEY_REMOTE_MODE = "remote_goose_mode"
         private const val KEY_USAGE_MONTH = "usage_month"
         private const val KEY_USAGE_IN = "usage_prompt_tokens"
         private const val KEY_USAGE_OUT = "usage_completion_tokens"
@@ -352,5 +409,6 @@ class SettingsRepository(context: Context) {
         private const val LEGACY_PREFS_FILE = "dsk_secure_prefs"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val LEGACY_MASTER_KEY_ALIAS = "_androidx_security_master_key_"
+        private const val REMOTE_KEY_ALIAS = "dsk_remote_secret"
     }
 }

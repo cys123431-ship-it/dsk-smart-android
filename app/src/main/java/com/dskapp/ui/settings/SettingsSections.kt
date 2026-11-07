@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Slider
 import androidx.lifecycle.Lifecycle
@@ -423,6 +424,114 @@ fun ErrorLogSection(
 
 /** Phone agent ("스마트폰 유즈") switches: accessibility status, level, steps, screenshots, allow-list. */
 @OptIn(ExperimentalLayoutApi::class)
+/** PC goose remote (Agent Client Protocol over WebSocket): address, secret, cwd, mode. */
+@Composable
+fun RemoteSection(
+    url: String,
+    secret: String,
+    cwd: String,
+    mode: String,
+    hasSecret: Boolean,
+    isTesting: Boolean,
+    status: String?,
+    onUrl: (String) -> Unit,
+    onSecret: (String) -> Unit,
+    onCwd: (String) -> Unit,
+    onMode: (String) -> Unit,
+    onSave: () -> Unit,
+    onTest: () -> Unit,
+    onOpenSessions: () -> Unit
+) {
+    Text("PC goose 원격 조종", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "집 PC에서 goose 데스크톱을 실행해 두면, 폰 채팅에서 명령해 PC의 goose가 그대로 일합니다. " +
+            "PC에 쌓인 대화 목록을 골라서 이어갈 수도 있어요.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Text(
+        "PC에서 (PowerShell):\n" +
+            "\$env:GOOSE_SERVER__SECRET_KEY=\"임의의긴비밀키\"\n" +
+            "goose serve --host 0.0.0.0 --port 3284\n" +
+            "집 밖에서도 접속하려면 Tailscale 설치 후 PC의 100.x.x.x 주소를 적으면 됩니다(포트 포워딩 불필요).",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    OutlinedTextField(
+        value = url,
+        onValueChange = onUrl,
+        label = { Text("PC 주소") },
+        placeholder = { Text("ws://100.64.0.5:3284/acp") },
+        singleLine = true,
+        supportingText = { Text("포트만 적어도 ws://…:3284/acp 로 맞춰 줍니다.") },
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = secret,
+        onValueChange = onSecret,
+        label = { Text("Secret Key") },
+        placeholder = { Text(if (hasSecret) "저장됨 (바꿀 때만 입력)" else "GOOSE_SERVER__SECRET_KEY 값") },
+        singleLine = true,
+        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth()
+    )
+    OutlinedTextField(
+        value = cwd,
+        onValueChange = onCwd,
+        label = { Text("작업 폴더 (PC 경로)") },
+        placeholder = { Text("C:\\Users\\me\\work\\project") },
+        singleLine = true,
+        supportingText = { Text("비우면 goose 기본 폴더에서 시작합니다. 세션 목록도 이 폴더 기준으로 걸러집니다.") },
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Text("권한 모드", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        RemoteModes.forEach { (id, label) ->
+            FilterChip(selected = mode == id, onClick = { onMode(id) }, label = { Text(label) })
+        }
+    }
+    Text(
+        when (mode) {
+            "chat" -> "도구 없이 대화만 합니다(파일 수정·명령 실행 불가)."
+            "auto" -> "모든 도구를 자동 승인합니다. PC 파일이 수정될 수 있으니 신뢰할 때만 쓰세요."
+            "smart_approve" -> "민감한 동작(파일 삭제·셸 실행 등)만 승인을 물어봅니다."
+            else -> "도구를 실행할 때마다 폰에서 승인/거절을 고릅니다(가장 안전)."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onSave) { Text("원격 설정 저장") }
+        OutlinedButton(onClick = onTest, enabled = !isTesting) {
+            if (isTesting) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Text("연결 테스트")
+            }
+        }
+        OutlinedButton(onClick = onOpenSessions) { Text("PC 대화 목록") }
+    }
+    status?.let {
+        Text(
+            text = it,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (it.startsWith("연결 실패")) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+/** ACP mode ids goose reports, with Korean labels. */
+val RemoteModes = listOf(
+    "approve" to "매번 승인",
+    "smart_approve" to "중요한 것만 승인",
+    "auto" to "자동 승인",
+    "chat" to "대화만"
+)
+
 @Composable
 fun AgentSection(
     level: AgentLevel,

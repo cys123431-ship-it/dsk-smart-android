@@ -1,0 +1,271 @@
+package com.dskapp.data.remote
+
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+
+/**
+ * Parsed views of the Agent Client Protocol (ACP) payloads that goose serve speaks over
+ * WebSocket. Everything arrives as free-form JSON, so each model reads the fields it needs
+ * defensively instead of mapping the whole schema with strict serializers: one unknown field
+ * in a future goose version must not break the stream.
+ */
+object AcpJson {
+
+    fun obj(text: String): JsonObject? = runCatching {
+        kotlinx.serialization.json.Json.parseToJsonElement(text).jsonObject
+    }.getOrNull()
+
+    /** Trims and strips a leading "ws://" / "http://" the user may have pasted. */
+    fun normalizeServerUrl(raw: String): String {
+        var value = raw.trim()
+        if (value.isEmpty()) return ""
+        when {
+            value.startsWith("https://", ignoreCase = true) ->
+                value = "wss://" + value.removePrefix("https://").removePrefix("HTTPS://")
+            value.startsWith("http://", ignoreCase = true) ->
+                value = "ws://" + value.removePrefix("http://").removePrefix("HTTP://")
+            !value.startsWith("ws://", ignoreCase = true) &&
+                !value.startsWith("wss://", ignoreCase = true) -> value = "ws://$value"
+        }
+        value = value.trimEnd('/')
+        // Most people paste just "100.x.x.x:3284": the ACP endpoint is always /acp.
+        val withoutScheme = value.substringAfter("://")
+        if (!withoutScheme.contains('/')) value += "/acp"
+        return value
+    }
+}
+
+/** Result of `initialize`. */
+data class AcpInitialize(
+    val agentName: String,
+    val agentVersion: String,
+    val protocolVersion: String,
+    val canLoadSession: Boolean,
+    val canListSessions: Boolean
+)
+
+/** One entry of `session/list`. */
+data class AcpSessionSummary(
+    val sessionId: String,
+    val title: String,
+    val updatedAt: String,
+    val cwd: String,
+    val messageCount: Int,
+    val providerId: String,
+    val modelId: String
+) {
+    /** Short "repo 2026-11-07 14:30" style label for the list. */
+    val subtitle: String
+        get() = listOf(
+            cwd.substringAfterLast('/').substringAfterLast('\\'),
+            updatedAt.replace('T', ' ').take(16)
+        ).filter { it.isNotBlank() }.joinToString(" · ")
+}
+
+/** A selectable agent mode reported by `session/new` / `session/load`. */
+data class AcpMode(val id: String, val name: String, val description: String)
+
+/** Everything the UI needs from `session/new` or `session/load`'s result. */
+data class AcpSession(
+    val sessionId: String,
+    val currentMode: String,
+    val modes: List<AcpMode>,
+    /** History replayed by `session/load`, in order. */
+    val history: List<AcpHistoryItem>
+) {
+    companion object {
+        fun from(json: JsonObject): AcpSession {
+            val modesObject = json["modes"]?.let { runCatching { it.jsonObject }.getOrNull() }
+            val modeList = modesObject?.get("availableModes")?.let { element ->
+                runCatching {
+                    element.jsonArray.mapNotNull { item ->
+                        val mode = runCatching { item.jsonObject }.getOrNull() ?: return@mapNotNull null
+                        val id = mode.string("id") ?: return@mapNotNull null
+                        AcpMode(id, mode.string("name") ?: id, mode.string("description").orEmpty())
+                    }
+                }.getOrNull()
+            }.orEmpty()
+            return AcpSession(
+                sessionId = json.string("sessionId").orEmpty(),
+                currentMode = modesObject?.string("currentModeId").orEmpty(),
+                modes = modeList,
+                history = emptyList()
+            )
+        }
+    }
+}
+
+/** A completed message reconstructed from a `session/load` replay. */
+data class AcpHistoryItem(val fromUser: Boolean, val text: String)
+
+/** Token counters from `usage_update`. */
+data class AcpUsage(val used: Int, val size: Int) {
+    val fraction: Float get() = if (size <= 0) 0f else (used.toFloat() / size).coerceIn(0f, 1f)
+}
+
+/** A tool invocation reported by `tool_call` / `tool_call_update`. */
+data class AcpToolCall(
+    val toolCallId: String,
+    val title: String,
+    /** "pending", "in_progress", "completed", "failed". */
+    val status: String,
+    /** "read", "edit", "execute", ... or null when goose omits it. */
+    val kind: String?
+) {
+    val isDone: Boolean get() = status == "completed" || status == "failed"
+}
+
+/** Content-block kinds we can show. Others (images, audio) degrade to a placeholder. */
+data class AcpBlock(val text: String, val isThought: Boolean)
+
+object AcpBlocks {
+    /** Flattens a `content` array of content blocks into viewable text blocks. */
+    fun parse(content: JsonArray?): List<AcpBlock> {
+        if (content == null) return emptyList()
+        return content.mapNotNull { element ->
+            val block = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            when (block.string("type")) {
+                "text" -> block.string("text")
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { AcpBlock(it, isThought = false) }
+                "thinking" -> block.string("text")
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { AcpBlock(it, isThought = true) }
+                "image" -> AcpBlock("[이미지]", isThought = false)
+                "audio" -> AcpBlock("[오디오]", isThought = false)
+                "resource_link" -> block.string("name")
+                    ?.let { AcpBlock("[$it]", isThought = false) }
+                else -> null
+            }
+        }
+    }
+}
+
+/**
+ * One decoded `session/update` notification. [kind] is the ACP `sessionUpdate` string so the
+ * caller can ignore variants it does not render and still log them.
+ */
+data class AcpUpdate(
+    val kind: String,
+    val text: String = "",
+    val toolCall: AcpToolCall? = null,
+    val usage: AcpUsage? = null,
+    val raw: JsonObject? = null
+) {
+    companion object {
+        fun parse(params: JsonObject?): AcpUpdate? {
+            if (params == null) return null
+            val update = params["update"]?.let { runCatching { it.jsonObject }.getOrNull() } ?: return null
+            val kind = update.string("sessionUpdate") ?: return null
+            return when (kind) {
+                "agent_message_chunk" -> AcpUpdate(
+                    kind,
+                    text = AcpBlocks.parse(update.array("content")).joinToString("") { it.text },
+                    raw = update
+                )
+                "agent_thought_chunk" -> AcpUpdate(
+                    kind,
+                    text = AcpBlocks.parse(update.array("content")).joinToString("") { it.text },
+                    raw = update
+                )
+                "user_message_chunk" -> AcpUpdate(
+                    kind,
+                    text = AcpBlocks.parse(update.array("content")).joinToString("") { it.text },
+                    raw = update
+                )
+                "tool_call", "tool_call_update" -> AcpUpdate(
+                    kind,
+                    toolCall = AcpToolCall(
+                        toolCallId = update.string("toolCallId").orEmpty(),
+                        title = update.string("title")
+                            ?: update.string("kind")
+                            ?: "도구",
+                        status = update.string("status") ?: "pending",
+                        kind = update.string("kind")
+                    ),
+                    raw = update
+                )
+                "usage_update" -> AcpUpdate(
+                    kind,
+                    usage = update["usage"]?.let { runCatching { it.jsonObject }.getOrNull() }?.let { u ->
+                        val used = u.long("used")?.toInt() ?: return@let null
+                        val size = u.long("size")?.toInt() ?: return@let null
+                        AcpUsage(used, size)
+                    },
+                    raw = update
+                )
+                else -> AcpUpdate(kind, raw = update)
+            }
+        }
+    }
+}
+
+/** A `session/request_permission` request that the user must allow or reject. */
+data class AcpPermissionRequest(
+    val requestId: String,
+    val sessionId: String,
+    val title: String,
+    val detail: String,
+    /** (optionId, label) pairs; the first is treated as "allow" when present. */
+    val options: List<Pair<String, String>>
+) {
+    companion object {
+        fun parse(requestId: String, params: JsonObject?): AcpPermissionRequest? {
+            if (params == null) return null
+            val toolCall = params["toolCall"]?.let { runCatching { it.jsonObject }.getOrNull() }
+            val options = params["options"]?.let { element ->
+                runCatching {
+                    element.jsonArray.mapNotNull { option ->
+                        val obj = runCatching { option.jsonObject }.getOrNull() ?: return@mapNotNull null
+                        val id = obj.string("optionId") ?: return@mapNotNull null
+                        id to (obj.string("name") ?: obj.string("kind") ?: id)
+                    }
+                }.getOrNull()
+            }.orEmpty()
+            val firstContent = toolCall?.array("content")
+                ?.let { AcpBlocks.parse(it).joinToString(" ") { it.text } }
+                .orEmpty()
+            return AcpPermissionRequest(
+                requestId = requestId,
+                sessionId = params.string("sessionId").orEmpty(),
+                title = toolCall?.string("title") ?: "도구 실행 승인",
+                detail = firstContent.take(400),
+                options = options
+            )
+        }
+    }
+}
+
+/** Outcome values allowed by ACP when answering a permission request. */
+object AcpPermissionOutcome {
+    const val SELECTED = "selected"
+    const val CANCELLED = "cancelled"
+}
+
+// ---- Small defensive JSON helpers ------------------------------------------------
+
+internal fun JsonObject.string(key: String): String? {
+    val primitive = this[key] as? JsonPrimitive ?: return null
+    return primitive.takeIf { it.isString }?.contentOrNull
+        ?: if (primitive is JsonNull) null else primitive.contentOrNull
+}
+
+internal fun JsonObject.long(key: String): Long? =
+    (this[key] as? JsonPrimitive)?.let { it.longOrNull ?: it.intOrNull?.toLong() }
+
+internal fun JsonObject.int(key: String): Int? = long(key)?.toInt()
+
+internal fun JsonObject.bool(key: String): Boolean? =
+    (this[key] as? JsonPrimitive)?.booleanOrNull
+
+internal fun JsonObject.array(key: String): JsonArray? =
+    runCatching { this[key]?.jsonArray }.getOrNull()

@@ -18,6 +18,8 @@ import com.dskapp.data.chat.ChatRepository
 import com.dskapp.data.commands.CommandRepository
 import com.dskapp.data.commands.PromptCommand
 import com.dskapp.data.log.ErrorLog
+import com.dskapp.data.remote.AcpClient
+import com.dskapp.data.remote.AcpJson
 import com.dskapp.agent.AgentLevel
 import com.dskapp.ui.lock.AppLock
 import com.dskapp.data.settings.SettingsRepository
@@ -56,7 +58,17 @@ data class SettingsUiState(
     val agentAllowedText: String = "",
     val agentBlockedText: String = "",
     val errorCount: Int = 0,
-    val lastErrorTime: String? = null
+    val lastErrorTime: String? = null,
+    // PC goose remote
+    val remoteUrl: String = "",
+    val remoteSecret: String = "",
+    val remoteCwd: String = "",
+    val remoteMode: String = "approve",
+    val hasRemoteSecret: Boolean = false,
+    val isRemoteTesting: Boolean = false,
+    /** True while the user is typing in the remote fields; the state collector leaves them alone. */
+    val isRemoteEditing: Boolean = false,
+    val remoteStatus: String? = null
 )
 
 /**
@@ -88,7 +100,11 @@ class SettingsViewModel(
             fontScale = repository.state.value.fontScale,
             priceInput = formatPrice(repository.state.value.priceInputPerMillion),
             priceOutput = formatPrice(repository.state.value.priceOutputPerMillion),
-            usage = repository.usage.value
+            usage = repository.usage.value,
+            remoteUrl = repository.state.value.remoteUrl,
+            remoteCwd = repository.state.value.remoteCwd,
+            remoteMode = repository.state.value.remoteMode,
+            hasRemoteSecret = repository.state.value.hasRemoteSecret
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -115,6 +131,10 @@ class SettingsViewModel(
                             agentScreenshots = settings.agentScreenshots,
                             agentAllowedText = settings.agentAllowed.sorted().joinToString("\n"),
                             agentBlockedText = settings.agentBlocked.sorted().joinToString("\n"),
+                            remoteUrl = if (current.isRemoteEditing) current.remoteUrl else settings.remoteUrl,
+                            remoteCwd = if (current.isRemoteEditing) current.remoteCwd else settings.remoteCwd,
+                            remoteMode = settings.remoteMode,
+                            hasRemoteSecret = settings.hasRemoteSecret,
                             usage = usage,
                             estimatedCostUsd = settings.costUsd(
                                 usage.promptTokens,
@@ -369,6 +389,88 @@ class SettingsViewModel(
         val packages = text.split('\n', ',', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         repository.saveAgentBlocked(packages)
         _uiState.update { it.copy(message = "차단 목록을 저장했습니다 (${packages.size}개).") }
+    }
+
+    // ---- PC goose remote (ACP over WebSocket) --------------------------------------
+
+    fun onRemoteUrlChange(value: String) {
+        _uiState.update { it.copy(remoteUrl = value, isRemoteEditing = true, remoteStatus = null) }
+    }
+
+    fun onRemoteSecretChange(value: String) {
+        _uiState.update { it.copy(remoteSecret = value, isRemoteEditing = true, remoteStatus = null) }
+    }
+
+    fun onRemoteCwdChange(value: String) {
+        _uiState.update { it.copy(remoteCwd = value, isRemoteEditing = true, remoteStatus = null) }
+    }
+
+    /** Persisted at once: the per-chat remote toggle reads it before a chat starts. */
+    fun onRemoteModeChange(mode: String) {
+        repository.saveRemoteMode(mode)
+        _uiState.update { it.copy(remoteMode = mode, isRemoteEditing = false) }
+    }
+
+    /** Empties the field and tells the user to re-enter the key (blank on save keeps it). */
+    fun saveRemoteSettings() {
+        val state = _uiState.value
+        val url = AcpJson.normalizeServerUrl(state.remoteUrl)
+        if (url.isBlank()) {
+            _uiState.update { it.copy(remoteStatus = "PC 주소를 입력해 주세요 (예: ws://100.64.0.5:3284/acp).") }
+            return
+        }
+        val typed = state.remoteSecret.trim()
+        val effectiveSecret = typed.ifBlank { repository.remoteSecret() }
+        if (effectiveSecret.isBlank()) {
+            _uiState.update { it.copy(remoteStatus = "Secret Key를 입력해 주세요 (PC의 GOOSE_SERVER__SECRET_KEY).") }
+            return
+        }
+        repository.saveRemote(url, effectiveSecret, state.remoteCwd.trim(), state.remoteMode)
+        _uiState.update {
+            it.copy(
+                remoteUrl = url,
+                remoteSecret = "",
+                remoteStatus = "저장했습니다. '연결 테스트'로 확인해 보세요.",
+                isRemoteEditing = false
+            )
+        }
+    }
+
+    /** Opens a throwaway ACP connection, runs initialize and reports agent + mode support. */
+    fun testRemote() {
+        val state = _uiState.value
+        if (state.isRemoteTesting) return
+        val url = AcpJson.normalizeServerUrl(state.remoteUrl)
+        if (url.isBlank()) {
+            _uiState.update { it.copy(remoteStatus = "PC 주소를 입력해 주세요.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRemoteTesting = true, remoteStatus = "PC goose에 연결하는 중…") }
+            val secret = state.remoteSecret.trim().ifBlank { repository.remoteSecret() }
+            val client = AcpClient(aiClient.testHttpClient(), url, secret)
+            val startedAt = System.currentTimeMillis()
+            val status = try {
+                client.connect()
+                val init = client.initialize()
+                val elapsed = System.currentTimeMillis() - startedAt
+                buildString {
+                    append("연결 성공 (").append(elapsed).append("ms)")
+                    if (init.agentName.isNotBlank()) append(" · ").append(init.agentName)
+                    if (init.agentVersion.isNotBlank()) append(' ').append(init.agentVersion)
+                    append(" · 프로토콜 ").append(init.protocolVersion)
+                    append(if (init.canListSessions) " · 세션 목록 지원" else " · 세션 목록 미지원")
+                    append(if (init.canLoadSession) " · 이어하기 지원" else " · 이어하기 미지원")
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: e::class.java.simpleName
+                ErrorLog.record("remote", "remote connection test failed: $msg")
+                "연결 실패: $msg"
+            } finally {
+                runCatching { client.close() }
+            }
+            _uiState.update { it.copy(isRemoteTesting = false, remoteStatus = status) }
+        }
     }
 
     /** The lock needs a phone PIN / pattern / password to fall back on. */

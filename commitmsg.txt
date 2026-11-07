@@ -1,0 +1,20 @@
+PC goose 원격 조종 추가 (v1.8.0)
+
+goose 데스크톱이 Agent Client Protocol(ACP)을 WebSocket으로 제공하는 점을
+실측으로 확인하고(initialize / session/new / session/prompt / session/list /
+session/load 전부 동작, HTTP POST는 404), 폰에서 PC의 goose를 조종하는 원격
+기능을 추가한다.
+
+- data/remote/AcpClient: OkHttp WebSocket + JSON-RPC 2.0, X-Secret-Key /
+  Acp-Connection-Id 헤더, 요청 id 매칭, session/update·request_permission 푸시를
+  Flow로 전달, 401/403·타임아웃 한국어 안내
+- data/remote/AcpModels: 세션 요약/모드/툴콜/컨텍스트 사용량/권한 요청 파싱,
+  서버 주소 정규화("100.x.x.x:3284" -> ws://100.x.x.x:3284/acp)
+- 설정 > PC goose 원격: 주소, Secret Key(Android Keystore 암호화, 별도 alias),
+  작업 폴더(cwd), 권한 모드(매번 승인/중요한 것만/자동/대화만), 연결 테스트
+- PC goose 대화 목록: goose에 쌓인 세션을 골라 이어서 작업(session/load로 기록 재생)
+- 원격 채팅: 스트리밍 답변, 생각(thought) 구분 표시, 툴 실행 카드, 승인/거절
+  대화상자(자동 승인 없음), 중단(session/cancel), 컨텍스트 사용량 표시
+- 테스트 155개 통과(ACP 파싱 17개 추가), :app:assembleRelease 성공
+
+집 밖 접속은 Tailscale 권장(PC: goose serve --host 0.0.0.0 --port 3284).

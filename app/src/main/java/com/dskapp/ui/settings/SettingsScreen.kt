@@ -65,7 +65,8 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     viewModel: SettingsViewModel,
     onBack: () -> Unit,
-    onOpenSchedule: () -> Unit = {}
+    onOpenSchedule: () -> Unit = {},
+    onOpenRemoteSessions: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val commands by viewModel.commands.collectAsStateWithLifecycle()
@@ -254,6 +255,25 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             OutlinedButton(onClick = onOpenSchedule) { Text("예약 작업 관리") }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            RemoteSection(
+                url = state.remoteUrl,
+                secret = state.remoteSecret,
+                cwd = state.remoteCwd,
+                mode = state.remoteMode,
+                hasSecret = state.hasRemoteSecret,
+                isTesting = state.isRemoteTesting,
+                status = state.remoteStatus,
+                onUrl = viewModel::onRemoteUrlChange,
+                onSecret = viewModel::onRemoteSecretChange,
+                onCwd = viewModel::onRemoteCwdChange,
+                onMode = viewModel::onRemoteModeChange,
+                onSave = viewModel::saveRemoteSettings,
+                onTest = viewModel::testRemote,
+                onOpenSessions = onOpenRemoteSessions
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
