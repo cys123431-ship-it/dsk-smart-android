@@ -1,0 +1,4 @@
+SECRET=change-me-to-a-long-random-string
+PORT=3284
+WORKDIR=
+GOOSE=

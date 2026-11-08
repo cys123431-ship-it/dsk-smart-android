@@ -219,6 +219,7 @@ app/src/main/java/com/dskapp/
 │  ├─ image/ImageProcessor.kt    축소 + EXIF 회전 + base64
 │  ├─ export/                    MarkdownParser, Docx/Xlsx/Pptx/Pdf Writer, ExportService
 │  └─ settings/                  SettingsRepository, KeystoreCipher (API 키 암호화)
+│     (별도로 data/remote/ : ACP 클라이언트, PC 자동 찾기, 네트워크 경로 판별)
 └─ ui/
    ├─ DskAppNavHost.kt           Chat ↔ Settings ↔ Search, 열린 대화의 ViewModel 만 유지
    ├─ chat/                      ChatScreen(폰 드로어 / 넓은 화면 2단 공용), ChatViewModel, Drawer, ExportSheet
@@ -234,6 +235,10 @@ ViewModel·UI 코드는 변경이 필요 없습니다.
 
 ---
 
+
+> PC 쪽에서 돌리는 goose 실행기는 앱 코드가 아니므로 리포지터리 루트의 `server/` 에 따로 있습니다.
+> (`DSK-Remote.bat`, `proxy.ps1`, `start-hidden.vbs`, 창 없는 자동 시작 스크립트)
+> 비밀 키와 실제 IP 는 들어 있지 않고, `settings.txt` 는 `.gitignore` 로 제외됩니다.
 ## 5. 빌드
 
 요구 사항: **JDK 17+**, Android SDK **Platform 36**, **Build-Tools 36.0.0**
@@ -282,11 +287,61 @@ keyPassword=...
 
 ---
 
-## 6. 1차 범위에 포함되지 않은 것
+## 6. PC 원격 연결 (goose ACP)
+
+PC 에서 goose 서버를 띄워 두면, 폰에서 같은 goose 를 그대로 씁니다.
+PC 쪽 실행기는 이 리포지터리의 `server/` 폴더에 있습니다.
+
+### 앱에서 하는 일
+
+1. 설정 → **PC goose 원격** → Secret Key 입력 후 **PC 자동 찾기**.
+2. 앱이 주소를 찾아 연결합니다. 찾지 못하면 주소를 직접 넣을 수 있습니다.
+
+### 자동 찾기 순서
+
+| 순서 | 찾는 곳 |
+|---|---|
+| 1 | 이미 연결했던 PC (기억해 둔 주소) |
+| 2 | 폰 자신의 Tailscale 주소 |
+| 3 | **Tailscale tailnet (100.64.0.0/10)** — 아래 설명 |
+| 4 | 같은 Wi-Fi 서브넷 (`192.168.0.1` ~ `192.168.0.254`) |
+
+**Tailscale 을 Wi-Fi 보다 먼저** 찾습니다. PC 의 tailnet 주소(`100.x.y.z`)는 바뀌지
+않기 때문에, 한 번 찾아 두면 **집 밖(LTE)에서도** 자동으로 연결됩니다.
+
+### tailnet 을 어떻게 찾나
+
+`100.64.0.0/10` 은 호스트가 약 400만 개라 전부 훑을 수 없습니다.
+폰은 자기 주소 하나만 알기 때문에, 예산(한 번에 6,000개)을 이 순서로 씁니다.
+
+| 단계 | 범위 | 이유 |
+|---|---|---|
+| 1 | 폰 자신의 `/24` 전체 (254개) | Tailscale 은 주소를 순서대로 주므로 PC 가 몇 번 차이에 있는 경우가 많음 |
+| 2 | 이웃 `/16` 의 같은 `/24` | 폰 주소가 `/16` 경계 근처일 때 PC 가 여기로 넘어감 |
+| 3 | 폰 / 이웃 `/16` 의 모든 `/24` 첫 몇 주소 | "같은 대역, 옆 블록" |
+| 4 | 나머지 63개 `/16` 에 **균등 분배** | 특정 대역이 예산을 독점해 다른 대역을 못 찾는 문제를 막음 |
+
+4단계가 핵심입니다. 예전에는 예산이 `100.64`·`100.66`·`100.71` 같은 앞쪽 대역에서
+다 쓰여, PC 가 `100.101.x.x` 에 있으면 **아예 탐색조차 되지 않았습니다.**
+지금은 63개 대역을 모두 조금씩 훑기 때문에 어디에 있든 찾을 확률이 있습니다.
+(`app/src/test/java/com/dskapp/data/remote/TailnetScanPlanTest.kt` 가 이 성질을 고정합니다.)
+
+탐색은 48개씩 병렬로 하고, 응답이 온 묶음에서 바로 멈춥니다.
+포트가 열려 있다는 것만으로 신뢰하지 않고, Secret Key 로 ACP 핸드셰이크까지 통과해야
+연결된 것으로 봅니다.
+
+### PC 쪽은 왜 2개 프로세스인가
+
+goose `serve` 는 자기 PC(127.0.0.1)가 아닌 곳에서 오는 WebSocket 을 **403** 으로
+거부합니다. 그래서 goose 는 `127.0.0.1:3285` 에만 두고, 앞에 TCP 프록시(`0.0.0.0:3284`)를
+세웁니다. 폰은 **3284** 로 접속합니다. 자세한 내용은 `server/README.md` 를 보세요.
+
+---
+## 7. 1차 범위에 포함되지 않은 것
 
 - **기존 파일 편집** (업로드한 docx/xlsx/pdf의 레이아웃을 유지하며 수정): 내용을 읽어 새 파일로 생성하는 방식만 지원
 
-## 7. 설계 메모
+## 8. 설계 메모
 
 ### 중계 서버를 쓰지 않는 이유와 대가
 이 앱은 API 키를 기기에 암호화 저장하고 AI 서버로 직접 호출합니다. 서버 운영 비용과

@@ -549,6 +549,16 @@ class SettingsViewModel(
 
             var found: KnownPc? = tryCandidates(candidates, secret)
 
+            // Tailscale before Wi-Fi: the PC's tailnet address never changes, so finding it
+            // once means "집 밖에서도 자동 연결" from then on. Only the phone's own 100.x
+            // address is known here, so probe its neighbours and the likely blocks.
+            if (found == null && snapshot.hasTailscale) {
+                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중…") }
+                val hosts = PcDiscovery.scanTailnet(snapshot.tailscaleIp, PcDiscovery.DEFAULT_PORT)
+                _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
+                found = tryCandidates(hosts.map { it.url }, secret)
+            }
+
             if (found == null && snapshot.isOnLan) {
                 _uiState.update { it.copy(remoteStatus = "Wi-Fi에서 PC를 찾는 중… (${snapshot.lanSubnet}.0)") }
                 val hosts = PcDiscovery.scanSubnet(snapshot.lanSubnet, PcDiscovery.DEFAULT_PORT, snapshot.localIp)
@@ -573,7 +583,12 @@ class SettingsViewModel(
                     it.copy(
                         isDiscovering = false,
                         knownPcs = repository.knownPcs(),
-                        remoteStatus = "PC를 찾지 못했습니다. PC에서 DSK-Remote.bat이 실행 중인지 확인해 주세요."
+                        remoteStatus = if (snapshot.hasTailscale) {
+                            "PC를 찾지 못했습니다. PC에서 DSK-Remote.bat이 실행 중인지, " +
+                                "폰과 PC가 같은 Tailscale 계정인지 확인해 주세요."
+                        } else {
+                            "PC를 찾지 못했습니다. PC에서 DSK-Remote.bat이 실행 중인지 확인해 주세요."
+                        }
                     )
                 }
             }

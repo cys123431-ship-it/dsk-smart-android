@@ -1,0 +1,4 @@
+# Your real settings - contains the secret key, never commit it.
+settings.txt
+server.log
+workspace/

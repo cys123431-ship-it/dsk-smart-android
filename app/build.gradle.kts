@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -21,8 +21,8 @@ android {
         applicationId = "com.dskapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.9.1"
+        versionCode = 16
+        versionName = "1.9.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

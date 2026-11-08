@@ -467,7 +467,7 @@ fun RemoteSection(
         )
     }
 
-    // The one button most people need: the app scans the Wi-Fi network and finds the PC.
+    // The one button most people need: the app scans Wi-Fi and Tailscale, finds the PC.
     Button(
         onClick = onAutoConnect,
         enabled = !isDiscovering && !isTesting,
@@ -486,7 +486,8 @@ fun RemoteSection(
         }
     }
     Text(
-        "PC에서 DSK-Remote.bat이 실행 중이면, 주소를 몰라도 자동으로 찾아 연결합니다.",
+        "PC에서 DSK-Remote.bat이 실행 중이면, 주소를 몰라도 자동으로 찾아 연결합니다. " +
+            "같은 Wi-Fi는 물론 Tailscale로도 찾습니다.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
