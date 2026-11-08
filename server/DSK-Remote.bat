@@ -171,8 +171,14 @@ set "GOOSES="
 for %%I in ("%GOOSE%") do set "GOOSES=%%~sI"
 if not defined GOOSES set "GOOSES=%GOOSE%"
 
+REM ---- every address the phone may dial must be an allowed Origin ----
+REM goose answers 403 to an Origin it does not know, even with the right key.
+set "ORIGINS=--allowed-origin http://127.0.0.1:%PORT% --allowed-origin http://localhost:%PORT%"
+for %%L in (%LANLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
+for %%L in (%TSLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
+
 REM goose: loopback only. never 0.0.0.0, or every phone gets 403.
-start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop >> "%~dp0server.log" 2>&1"
+start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS% >> "%~dp0server.log" 2>&1"
 
 REM wait for goose to bind before the proxy tries to reach it
 set "UP="
@@ -202,9 +208,15 @@ set "GOOSES="
 for %%I in ("%GOOSE%") do set "GOOSES=%%~sI"
 if not defined GOOSES set "GOOSES=%GOOSE%"
 
+REM ---- every address the phone may dial must be an allowed Origin ----
+REM goose answers 403 to an Origin it does not know, even with the right key.
+set "ORIGINS=--allowed-origin http://127.0.0.1:%PORT% --allowed-origin http://localhost:%PORT%"
+for %%L in (%LANLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
+for %%L in (%TSLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
+
 echo.
 echo   Starting goose on 127.0.0.1:%GOOSEPORT% ...
-start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop >> "%~dp0server.log" 2>&1"
+start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS% >> "%~dp0server.log" 2>&1"
 ping -n 6 127.0.0.1 >nul 2>&1
 
 echo   Starting the phone front door on 0.0.0.0:%PORT% ...

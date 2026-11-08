@@ -110,10 +110,19 @@ Tailscale 이 없어도 집 안 Wi-Fi 에서는 그대로 쓸 수 있습니다.
 폰은 **3284** 로 접속하고, 3285 는 밖에 열려 있지 않습니다.
 
 > **왜 이렇게 했나:** goose 의 `serve` 는 127.0.0.1(자기 PC) 말고 다른 곳에서 오는
-> WebSocket 연결을 **403 Forbidden** 으로 거부합니다. (`--allowed-origin` 은 HTTP CORS
-> 옵션이라 도움이 안 되고, 오히려 루프백까지 막습니다.) 그래서 goose 는 루프백에만
+> WebSocket 연결을 **403 Forbidden** 으로 거부합니다. 그래서 goose 는 루프백에만
 > 두고, 앞에 TCP 프록시를 세워 폰의 접속을 그대로 안쪽으로 흘려보냅니다.
 > 프록시는 데이터를 그대로 복사만 하므로 Secret Key 검사도 goose 가 그대로 합니다.
+
+> **Origin 도 열어 둡니다 (1.9.3).** goose 는 Secret Key 를 보기 **전에** `Origin` 헤더를
+> 검사합니다. 폰은 `http://<PC 주소>:3284` 를 Origin 으로 보내므로, 그 주소를 모르면
+> 키가 맞아도 403 이 납니다. `DSK-Remote.bat` 이 이 PC 의 모든 IPv4 주소(Wi-Fi·이더넷·
+> Tailscale)를 찾아 `--allowed-origin` 으로 넘깁니다. IP 가 바뀌어도 실행할 때마다
+> 다시 읽으므로 따로 고칠 것은 없습니다.
+>
+> 참고로 `--allowed-origin` 을 주면 goose 의 기본 루프백 Origin 목록이 **대체**됩니다.
+> 그래서 스크립트가 `127.0.0.1` 과 `localhost` 도 함께 넣습니다. 빼먹으면 PC 자신의
+> 브라우저에서만 403 이 납니다.
 
 - 폰과는 `ws://주소:3284/acp` WebSocket(ACP, JSON-RPC 2.0) 로 통신합니다.
 - `X-Secret-Key` 헤더(앱 기준)가 맞지 않으면 거부됩니다.
@@ -130,5 +139,9 @@ Tailscale 이 없어도 집 안 Wi-Fi 에서는 그대로 쓸 수 있습니다.
   4. Windows 방화벽이 3284 포트를 막고 있지 않은지 확인
   5. `server.log` 를 열어 `front door on 0.0.0.0:3284 -> 127.0.0.1:3285` 가 있는지 확인
      (이 줄이 없으면 프록시가 안 뜬 것이므로 서버를 다시 켜세요)
-- **403 Forbidden 이 보일 때** — goose 는 자기를 직접 부른 접속을 거부합니다.
-  폰은 반드시 3284(프록시) 로 접속해야 합니다. 3285 를 입력하면 안 됩니다.
+- **403 Forbidden 이 보일 때**
+  1. 폰은 반드시 3284(프록시) 로 접속해야 합니다. 3285 를 입력하면 안 됩니다.
+  2. 그래도 403 이면 대개 **Origin** 문제입니다. `DSK-Remote.bat` 이 예전 것(1.9.3 이전)이면
+     새 것으로 바꾼 뒤 `Stop-DSK-Remote.bat` → `DSK-Remote.bat` 순서로 다시 켜세요.
+- **폰에서 PC 를 못 찾을 때** — 폰의 Tailscale 앱에서 **MagicDNS** 가 켜져 있는지 보세요
+  (Tailscale 앱 → Settings). 켜져 있으면 앱이 PC 이름(`내PC.xxxx.ts.net`)을 곧바로 물어봅니다.

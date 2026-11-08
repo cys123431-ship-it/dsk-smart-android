@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -29,7 +30,7 @@ object PcDiscovery {
      * because nothing ever answers, so this is what decides how long a tailnet scan takes:
      * 18k addresses at 128 parallel is roughly 50 seconds, at 48 it is over two minutes.
      */
-    private const val PARALLELISM = 128
+    private const val PARALLELISM = 256
 
     /**
      * How many tailnet addresses one "PC 자동 찾기" is allowed to probe.
@@ -39,7 +40,19 @@ object PcDiscovery {
      * few hosts per /24 looked clever and failed in the field (the PC was at
      * 100.100.50.25 and was never probed), so the budget buys WHOLE /24 blocks instead.
      */
-    internal const val TAILNET_MAX_HOSTS = 18_000
+    /**
+     * 63 far slices (16,002) plus a near tier worth having: the phone's own /24, the 8
+     * around it, the neighbour /24s, and the neighbour /16s. 24 near blocks (6,096) makes
+     * 22,098 addresses, about 60 seconds at 128 parallel probes.
+     */
+    internal const val TAILNET_MAX_HOSTS = 68_400
+
+    /**
+     * Near blocks worth having: the phone's own /24, the 8 around it, the neighbour /24s,
+     * and the neighbour /16s (3 x 256). Spending less than this leaves a real hole - a PC
+     * in the same /16 but a far /24 was never probed.
+     */
+    private const val NEAR_BLOCKS = 206
 
     /** A whole /24 is always probed, or not at all - never a sample of it. */
     private const val BLOCK = 254
@@ -145,10 +158,22 @@ object PcDiscovery {
             .filter { it in 64..127 }
         val otherSlices = (64..127).filter { it != ownSecond }
 
-        // Reserve the far slices' share up front; the near tiers may use the rest. One block
-        // per far slice is what fits: 63 slices is already 16k addresses of the 18k budget.
-        val perFarSlice = if (otherSlices.isEmpty()) 0 else 1
-        val nearLimit = maxOf(BLOCK, maxHosts - otherSlices.size * perFarSlice * BLOCK)
+        // The far slices' share is RESERVED before the near tiers run, so the near tiers
+        // cannot starve them. The earlier code reserved 63 * 254 = 16,002 of an 18,000
+        // budget, which left the near tier only 7 blocks and silently dropped the phone's
+        // own /24 and every neighbour /16 - so a PC at 100.127.10.20 was never probed at
+        // all. The default budget now covers both tiers with room to spare.
+        //
+        // A far slice gets SEVERAL blocks spread over its third octets. One block at .0 is
+        // useless: tailscale hands out /32s from the whole /16, so a PC at 100.127.10.x
+        // sits in block .139, not .0. This was the actual reason the phone never found the
+        // PC even though the scan looked like it covered every slice.
+        val farSlices = otherSlices.size
+        val nearWanted = NEAR_BLOCKS
+        val leftForFar = (maxHosts / BLOCK) - nearWanted
+        val perFarSlice = if (farSlices == 0) 0 else (leftForFar / farSlices).coerceAtLeast(1)
+        val farReserve = farSlices * perFarSlice * BLOCK
+        val nearLimit = (maxHosts - farReserve).coerceAtLeast(BLOCK)
 
         // 1. Our own /24, then the 8 around it in the same /16.
         addBlock(ownSecond, ownThird, nearLimit)
@@ -161,22 +186,32 @@ object PcDiscovery {
             if (second != ownSecond) addBlock(second, ownThird, nearLimit)
         }
 
-        // 3. The rest of our /16 and of the neighbour /16s.
-        for (second in neighbourSeconds) {
-            for (third in 0..255) addBlock(second, third, nearLimit)
+        // 3. The rest of our /16 and of the neighbour /16s, nearest third octet first and
+        //    interleaved across the three /16s. Adding one whole /16 before the next would
+        //    let the first eat the budget and leave 100.69.* and 100.71.* unprobed.
+        for (distance in 1..128) {
+            for (second in neighbourSeconds) {
+                addBlock(second, ownThird + distance, nearLimit)
+                addBlock(second, ownThird - distance, nearLimit)
+            }
         }
 
-        // 4. The far slices, each with its reserved share, spread across the slice.
+        // 4. The far slices, each with its reserved share, spread over the slice's third
+        //    octets. With one block per slice the stride is 256 and it lands on .0, which is
+        //    the least likely place for a PC; spreading means every slice is sampled at a
+        //    different third octet instead of all of them checking .0.
         if (perFarSlice > 0) {
-            val stride = maxOf(1, 256 / perFarSlice)
-            for (second in otherSlices) {
+            val stride = 256 / perFarSlice
+            for ((sliceIndex, second) in otherSlices.withIndex()) {
                 var added = 0
-                var third = 0
-                while (added < perFarSlice && third <= 255) {
+                // Offset each slice so the samples do not line up: slice 0 starts at 0,
+                // slice 1 a little further on, and so around.
+                val offset = (sliceIndex * 37) % 256
+                for (step in 0 until perFarSlice) {
+                    val third = (offset + step * stride) % 256
                     if (addBlock(second, third, maxHosts)) added++
-                    third += stride
                 }
-                // The stride can skip past 255 before the share is filled; top up from zero.
+                // Top up from zero if a collision left the share short.
                 var fill = 0
                 while (added < perFarSlice && fill <= 255) {
                     if (addBlock(second, fill, maxHosts)) added++
@@ -201,15 +236,46 @@ object PcDiscovery {
     }.getOrDefault(false)
 
     /**
-     * Convenience: scan whatever the phone is currently on - the Tailscale tailnet first
-     * (that address works from anywhere), then the Wi-Fi subnet.
+     * Resolves a MagicDNS name to the tailnet addresses behind it.
+     *
+     * This is the reliable way to find the PC and it costs milliseconds. A tailnet is
+     * 4,194,304 addresses; guessing with whole /24 blocks can only ever cover a small
+     * slice of one /16, so a scan is a last resort, not the plan. MagicDNS turns the PC's
+     * machine name into its 100.x address directly.
      */
-    suspend fun find(context: android.content.Context): List<Found> {
+    suspend fun resolveName(name: String): List<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            InetAddress.getAllByName(name)
+                .map { it.hostAddress.orEmpty().substringBefore('%') }
+                .filter { it.isNotBlank() && it.contains('.') }
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Convenience: find the PC on whatever the phone is currently on.
+     *
+     * Order matters. MagicDNS name first (instant, exact), then the remembered addresses,
+     * then the tailnet scan, then the Wi-Fi subnet.
+     */
+    suspend fun find(
+        context: android.content.Context,
+        magicDnsName: String = ""
+    ): List<Found> {
         val snapshot = NetworkRoute.snapshot(context)
+
+        // 1. MagicDNS: the name never changes, so this works from home and from outside.
+        if (snapshot.hasTailscale && magicDnsName.isNotBlank()) {
+            val resolved = resolveName(magicDnsName)
+            val answering = resolved.filter { isOpen(it, DEFAULT_PORT) }
+            if (answering.isNotEmpty()) return answering.map { Found(it, DEFAULT_PORT) }
+        }
+
         if (snapshot.hasTailscale) {
+            // 2. The phone's own address is not the PC, but a wrong guess is cheap.
             if (isOpen(snapshot.tailscaleIp, DEFAULT_PORT)) {
                 return listOf(Found(snapshot.tailscaleIp, DEFAULT_PORT))
             }
+            // 3. Last resort: walk the tailnet in /24 blocks.
             val tailnet = scanTailnet(snapshot.tailscaleIp, DEFAULT_PORT)
             if (tailnet.isNotEmpty()) return tailnet
         }

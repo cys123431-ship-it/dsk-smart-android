@@ -6,14 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The tailnet addresses we probe have to be chosen without any hint from the network:
- * a tailnet is 100.64.0.0/10, four million hosts, and the phone only knows its own
- * address. These tests pin down the shape of that choice.
+ * The tailnet plan decides which of the 4,194,304 tailnet addresses get probed.
+ *
+ * A shipped version of this failed in the field: it reserved 63 * 254 = 16,002 of an
+ * 18,000 budget for the far slices, leaving the near tiers 7 blocks instead of the 768
+ * they needed. The phone's own /24 and every neighbour /16 were silently dropped, and a
+ * PC at 100.127.10.20 was never probed. These tests pin the properties that broke.
  */
 class TailnetScanPlanTest {
 
     private val own = "100.70.136.43"
-    private val plan = PcDiscovery.tailnetPlan(own, maxHosts = 18_000)
+    private val plan = PcDiscovery.tailnetPlan(own)
     private val blocks = plan.map { it.substringBeforeLast('.') }.distinct()
 
     @Test
@@ -26,7 +29,6 @@ class TailnetScanPlanTest {
 
     @Test
     fun blocksAreAlwaysWhole() {
-        // Sampling a few hosts per /24 is what missed the real PC at 100.100.50.25.
         val byBlock = plan.groupBy { it.substringBeforeLast('.') }
         assertTrue(byBlock.isNotEmpty())
         byBlock.forEach { (block, hosts) ->
@@ -37,18 +39,27 @@ class TailnetScanPlanTest {
 
     @Test
     fun thePhonesOwnSliceIsProbedWhole() {
-        // The phone's own /16 and the two neighbours get far more than one block each.
         assertTrue(blocks.count { it.startsWith("100.70.") } >= 4)
         assertTrue("100.69.136" in blocks)
         assertTrue("100.71.136" in blocks)
-        assertTrue("100.69.0" in blocks)
-        assertTrue("100.71.0" in blocks)
+    }
+
+    /**
+     * The bug that shipped: the near tiers were squeezed out by the far reservation, so
+     * 100.69.* and 100.71.* had exactly one block each instead of a usable band.
+     */
+    @Test
+    fun theNeighbourSlicesGetARealBand() {
+        val perSlice = (69..71).associateWith { slice ->
+            blocks.count { it.startsWith("100.$slice.") }
+        }
+        assertTrue("neighbour slices are nearly empty: $perSlice", perSlice.values.all { it >= 20 })
+        val spread = perSlice.values.maxOrNull()!! - perSlice.values.minOrNull()!!
+        assertTrue("neighbour slices are unbalanced: $perSlice", spread <= 2)
     }
 
     @Test
     fun everyTailnetSliceIsCovered() {
-        // The bug this guards against: the budget ran out part-way and a PC in a later
-        // slice was never even probed.
         for (second in 64..127) {
             assertTrue("missing 100.$second.", blocks.any { it.startsWith("100.$second.") })
         }
@@ -58,15 +69,29 @@ class TailnetScanPlanTest {
     fun farSlicesGetAnEqualShare() {
         val counts = (64..127)
             .filter { it !in 69..71 }
-            .map { second -> blocks.count { it.startsWith("100.$second.") } }
-            .distinct()
-        assertEquals("far slices are unbalanced: $counts", 1, counts.size)
+            .map { slice -> blocks.count { it.startsWith("100.$slice.") } }
+        assertTrue("no far slices at all", counts.isNotEmpty())
+        assertEquals("far slices are unbalanced: $counts", 1, counts.distinct().size)
+    }
+
+    /**
+     * A far slice gets a whole /24 at a third octet that differs per slice, not always .0.
+     * Checking .0 in every slice would be the same address pattern 64 times over.
+     */
+    @Test
+    fun farSlicesDoNotAllCheckTheSameThirdOctet() {
+        val farThirdOctets = (64..127)
+            .filter { it !in 69..71 }
+            .mapNotNull { slice ->
+                blocks.firstOrNull { it.startsWith("100.$slice.") }?.substringAfterLast('.')
+            }
+        assertTrue("far slices all use one third octet", farThirdOctets.toSet().size > 1)
     }
 
     @Test
     fun nearSlicesComeBeforeFarOnes() {
-        val firstFar = blocks.indexOfFirst {
-            val second = it.split('.')[1].toInt()
+        val firstFar = blocks.indexOfFirst { block ->
+            val second = block.split('.')[1].toInt()
             second !in 69..71
         }
         assertTrue("no far slices at all", firstFar > 0)
@@ -76,9 +101,9 @@ class TailnetScanPlanTest {
     @Test
     fun planIsBounded() {
         assertTrue("too many probes: ${plan.size}", plan.size <= PcDiscovery.TAILNET_MAX_HOSTS)
-        assertTrue("plan is suspiciously short: ${plan.size}", plan.size > 15_000)
-        // The plan must stay short enough to finish: dead hosts cost the full timeout.
-        assertTrue("scan would take too long", plan.size / 128 < 200)
+        assertTrue("plan is suspiciously short: ${plan.size}", plan.size > 60_000)
+        // 256 probes in flight at 350 ms each: the worst case has to stay near 90 seconds.
+        assertTrue("scan would take too long", plan.size / 256 < 300)
     }
 
     @Test
@@ -96,7 +121,6 @@ class TailnetScanPlanTest {
     fun aSmallBudgetStillBuysWholeBlocks() {
         val small = PcDiscovery.tailnetPlan(own, maxHosts = 254)
         assertEquals((1..254).map { "100.70.136.$it" }, small)
-        // Not even one whole /24 fits.
         assertTrue(PcDiscovery.tailnetPlan(own, maxHosts = 100).isEmpty())
     }
 

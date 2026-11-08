@@ -550,12 +550,34 @@ class SettingsViewModel(
             var found: KnownPc? = tryCandidates(candidates, secret)
 
             // Tailscale before Wi-Fi: the PC's tailnet address never changes, so finding it
-            // once means "집 밖에서도 자동 연결" from then on. Only the phone's own 100.x
-            // address is known here, so probe its neighbours and the likely blocks.
+            // once means "집 밖에서도 자동 연결" from then on.
+            //
+            // MagicDNS first. A tailnet is 4,194,304 addresses, so walking it in /24 blocks
+            // can only sample a sliver of one /16 - the scan missed a real PC at
+            // 100.127.10.20 because its block was never in the plan. Asking DNS for the
+            // PC's name is exact and takes milliseconds.
             if (found == null && snapshot.hasTailscale) {
-                // A tailnet has no subnet to walk, so this probes a few thousand addresses
-                // and takes up to a minute. Say so rather than looking frozen.
-                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중… (1분 정도 걸릴 수 있습니다)") }
+                val names = repository.knownPcs()
+                    .filter { it.isTailscale }
+                    .map { it.host }
+                    .filter { !it.matches(Regex("^[0-9.]+$")) }
+                    .distinct()
+                if (names.isNotEmpty()) {
+                    _uiState.update { it.copy(remoteStatus = "Tailscale 이름으로 PC를 찾는 중…") }
+                    val resolved = names.flatMap { name ->
+                        PcDiscovery.resolveName(name).map { "$it:${PcDiscovery.DEFAULT_PORT}" }
+                    }.distinct()
+                    if (resolved.isNotEmpty()) {
+                        _uiState.update { it.copy(discoveredPcs = resolved) }
+                        found = tryCandidates(resolved, secret)
+                    }
+                }
+            }
+
+            if (found == null && snapshot.hasTailscale) {
+                // A tailnet has no subnet to walk, so this probes tens of thousands of
+                // addresses and takes a minute and a half. Say so rather than looking frozen.
+                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중… (1분 30초 정도 걸릴 수 있습니다)") }
                 val hosts = PcDiscovery.scanTailnet(snapshot.tailscaleIp, PcDiscovery.DEFAULT_PORT)
                 _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
                 found = tryCandidates(hosts.map { it.url }, secret)
