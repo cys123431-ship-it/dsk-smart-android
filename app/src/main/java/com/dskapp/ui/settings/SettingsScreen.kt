@@ -73,6 +73,10 @@ fun SettingsScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // Wi-Fi / Tailscale can change while the app was in the background, so re-read them
+    // each time this screen opens (the ViewModel only reads once, at creation).
+    LaunchedEffect(Unit) { runCatching { viewModel.refreshNetwork() } }
+
     // Results (save, backup, prices...) appear as a snackbar so they are visible from
     // whichever section of this long page the user is in.
     LaunchedEffect(state.message) {

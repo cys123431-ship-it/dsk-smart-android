@@ -25,8 +25,11 @@ import java.net.NetworkInterface
  */
 object NetworkRoute {
 
-    /** Tailscale hands out addresses from 100.64.0.0/10. */
-    private const val TAILSCALE_PREFIX = "100."
+    /** Tailscale hands out addresses from 100.64.0.0/10 (100.64.x.x – 100.127.x.x). */
+    internal fun isTailscale(address: String): Boolean {
+        val second = address.split('.').getOrNull(1)?.toIntOrNull() ?: return false
+        return address.startsWith("100.") && second in 64..127
+    }
 
     data class Snapshot(
         /** Wi-Fi / Ethernet IPv4 address of this phone, empty when offline. */
@@ -41,7 +44,9 @@ object NetworkRoute {
     }
 
     fun snapshot(context: Context): Snapshot {
-        val (local, tailscale) = readAddresses(context)
+        // Never throw: the settings screen calls this on the main thread while it is being
+        // created, so an exception here would close the app.
+        val (local, tailscale) = runCatching { readAddresses(context) }.getOrDefault("" to "")
         return Snapshot(
             localIp = local,
             tailscaleIp = tailscale,
@@ -62,19 +67,24 @@ object NetworkRoute {
 
         fun consider(address: String) {
             if (address.startsWith("127.") || address.startsWith("169.254.")) return
-            if (address.startsWith(TAILSCALE_PREFIX)) {
+            if (isTailscale(address)) {
                 if (tailscale.isEmpty()) tailscale = address
             } else if (local.isEmpty()) {
                 local = address
             }
         }
 
-        cm?.let { manager ->
-            manager.allNetworks.forEach { network ->
-                val props: LinkProperties = manager.getLinkProperties(network) ?: return@forEach
-                props.linkAddresses.forEach { link: LinkAddress ->
-                    val addr = link.address
-                    if (addr is Inet4Address) consider(addr.hostAddress.orEmpty())
+        // Every call here is wrapped: a ROM can throw SecurityException (missing
+        // ACCESS_NETWORK_STATE), IllegalStateException or RemoteException, and none of them
+        // may crash the settings screen just because the address could not be read.
+        runCatching {
+            cm?.let { manager ->
+                manager.allNetworks.forEach { network ->
+                    val props: LinkProperties = manager.getLinkProperties(network) ?: return@forEach
+                    props.linkAddresses.forEach { link: LinkAddress ->
+                        val addr = link.address
+                        if (addr is Inet4Address) consider(addr.hostAddress.orEmpty())
+                    }
                 }
             }
         }

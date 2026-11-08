@@ -505,7 +505,9 @@ class SettingsViewModel(
 
     /** Refreshes how this phone can reach the PC (Wi-Fi address, Tailscale, subnet). */
     fun refreshNetwork() {
-        val snapshot = NetworkRoute.snapshot(appContext)
+        // Cheap but not free, and the settings screen calls this while being created; the
+        // runCatching keeps a missing permission or a ROM quirk from closing the app.
+        val snapshot = runCatching { NetworkRoute.snapshot(appContext) }.getOrDefault(NetworkRoute.Snapshot())
         val summary = buildString {
             when {
                 snapshot.isOnLan -> append("Wi-Fi ").append(snapshot.localIp)

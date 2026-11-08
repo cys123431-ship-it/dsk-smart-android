@@ -3,6 +3,9 @@
 
     <!-- Outbound HTTPS calls to the AI provider -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- "PC 자동 찾기": reads the phone's Wi-Fi / Tailscale address to guess the PC's.
+         Without it ConnectivityManager.allNetworks throws SecurityException. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Optional: voice dictation into documents -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

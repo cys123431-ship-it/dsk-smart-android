@@ -33,4 +33,17 @@ class NetworkRouteSnapshotTest {
         val found = PcDiscovery.Found("192.168.0.10", 3284)
         assertEquals("192.168.0.10:3284", found.url)
     }
+
+    /** Only 100.64.0.0/10 is Tailscale; a plain 100.x LAN must stay a LAN address. */
+    @Test
+    fun onlyTailscaleRangeCountsAsTailscale() {
+        assertTrue(NetworkRoute.isTailscale("100.100.50.25"))
+        assertTrue(NetworkRoute.isTailscale("100.64.0.1"))
+        assertTrue(NetworkRoute.isTailscale("100.127.255.254"))
+        assertFalse(NetworkRoute.isTailscale("100.128.0.1"))
+        assertFalse(NetworkRoute.isTailscale("100.63.0.1"))
+        assertFalse(NetworkRoute.isTailscale("192.168.0.10"))
+        assertFalse(NetworkRoute.isTailscale(""))
+        assertFalse(NetworkRoute.isTailscale("100"))
+    }
 }
