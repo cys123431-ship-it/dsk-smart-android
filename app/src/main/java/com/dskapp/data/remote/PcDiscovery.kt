@@ -23,10 +23,26 @@ object PcDiscovery {
     const val DEFAULT_PORT = 3284
 
     private const val CONNECT_TIMEOUT_MS = 350
-    private const val PARALLELISM = 48
 
-    /** How many tailnet addresses one "PC 자동 찾기" is allowed to probe. */
-    internal const val TAILNET_MAX_HOSTS = 6000
+    /**
+     * Probes in flight at once. A dead tailnet address costs the full [CONNECT_TIMEOUT_MS]
+     * because nothing ever answers, so this is what decides how long a tailnet scan takes:
+     * 18k addresses at 128 parallel is roughly 50 seconds, at 48 it is over two minutes.
+     */
+    private const val PARALLELISM = 128
+
+    /**
+     * How many tailnet addresses one "PC 자동 찾기" is allowed to probe.
+     *
+     * A tailnet holds fewer than a hundred devices, but they can live anywhere in the four
+     * million addresses of 100.64.0.0/10 and the phone knows only its own address. Picking a
+     * few hosts per /24 looked clever and failed in the field (the PC was at
+     * 100.100.50.25 and was never probed), so the budget buys WHOLE /24 blocks instead.
+     */
+    internal const val TAILNET_MAX_HOSTS = 18_000
+
+    /** A whole /24 is always probed, or not at all - never a sample of it. */
+    private const val BLOCK = 254
 
     data class Found(val host: String, val port: Int) {
         val url: String get() = "$host:$port"
@@ -88,21 +104,21 @@ object PcDiscovery {
      * The ordered list of tailnet addresses [scanTailnet] probes. Pure, so the shape can be
      * tested without opening a single socket.
      *
-     * A tailnet gives us no subnet hint: the phone knows only its own 100.x address, and the
-     * PC can sit anywhere in 100.64.0.0/10 - four million hosts. The probe budget is spent
-     * in tiers, most likely first:
+     * A tailnet gives us no subnet hint: the phone knows only its own 100.x address and the
+     * PC can sit anywhere in 100.64.0.0/10 - four million hosts. The budget is spent in
+     * tiers, most likely first, and every tier adds WHOLE /24 blocks:
      *
-     *  1. the phone's own /24, all 254 hosts - tailscale hands out addresses in sequence, so
-     *     a PC set up around the same time is often a few numbers away;
-     *  2. the phone's own /24 in the two neighbour /16s (100.69.x, 100.71.x for 100.70.x) -
-     *     that is where the PC lands when the phone's own address is near the /16 boundary;
-     *  3. the first 4 hosts of every /24 in the phone's own /16, then in the two neighbour
-     *     /16s, which covers "same tailnet, adjacent block";
-     *  4. whatever budget is left, shared EVENLY over all 63 other /16 slices, four staggered
-     *     hosts per /24. Every slice gets a share, so a PC at 100.101.x.x is not crowded out
-     *     by 100.64.x.x - that starvation was a real bug in the previous version.
+     *  1. the phone's own /24, then the 8 around it in the same /16 - tailscale hands out
+     *     addresses in sequence, so the PC is often a few numbers away;
+     *  2. the phone's own /24 in the two neighbour /16s (100.69.x, 100.71.x for 100.70.x);
+     *  3. the rest of the phone's /16 and of the two neighbour /16s;
+     *  4. the remaining 63 /16 slices, each getting the same share. Inside a slice the /24s
+     *     are spread (0, 16, 32, ...) rather than taken from the front, because a tailnet's
+     *     PCs cluster around one third-octet and the front blocks of a slice are unlikely.
      *
-     * Tiers stop adding once [maxHosts] is reached; the result never exceeds it.
+     * The far slices get their share RESERVED before the near tiers run; otherwise the near
+     * tiers eat the whole budget and a PC such as 100.100.50.25 is never reached - that was
+     * a real bug. The result never exceeds [maxHosts].
      */
     internal fun tailnetPlan(ownTailscaleIp: String, maxHosts: Int = TAILNET_MAX_HOSTS): List<String> {
         val parts = ownTailscaleIp.split('.')
@@ -110,60 +126,68 @@ object PcDiscovery {
         if (!NetworkRoute.isTailscale(ownTailscaleIp)) return emptyList()
         val ownSecond = parts[1].toIntOrNull() ?: return emptyList()
         val ownThird = parts[2].toIntOrNull() ?: return emptyList()
-        if (maxHosts <= 0) return emptyList()
+        if (maxHosts < BLOCK) return emptyList()
 
-        val out = ArrayList<String>(minOf(maxHosts, 8192))
-        val seen = HashSet<String>(minOf(maxHosts, 8192))
+        val blocks = ArrayList<Pair<Int, Int>>()
+        val taken = HashSet<Long>()
 
-        fun add(second: Int, third: Int, host: Int) {
-            if (out.size >= maxHosts) return
-            if (second < 64 || second > 127) return
-            if (third < 0 || third > 255) return
-            if (host < 1 || host > 254) return
-            val address = "100.$second.$third.$host"
-            if (seen.add(address)) out.add(address)
+        fun addBlock(second: Int, third: Int, limit: Int): Boolean {
+            if (second < 64 || second > 127) return false
+            if (third < 0 || third > 255) return false
+            if (blocks.size * BLOCK + BLOCK > limit) return false
+            val key = second.toLong() * 256L + third
+            if (!taken.add(key)) return false
+            blocks.add(second to third)
+            return true
         }
 
         val neighbourSeconds = listOf(ownSecond, ownSecond - 1, ownSecond + 1)
             .filter { it in 64..127 }
+        val otherSlices = (64..127).filter { it != ownSecond }
 
-        // 1. Our own /24, in full.
-        for (host in 1..254) add(ownSecond, ownThird, host)
+        // Reserve the far slices' share up front; the near tiers may use the rest. One block
+        // per far slice is what fits: 63 slices is already 16k addresses of the 18k budget.
+        val perFarSlice = if (otherSlices.isEmpty()) 0 else 1
+        val nearLimit = maxOf(BLOCK, maxHosts - otherSlices.size * perFarSlice * BLOCK)
+
+        // 1. Our own /24, then the 8 around it in the same /16.
+        addBlock(ownSecond, ownThird, nearLimit)
+        for (third in listOf(ownThird - 1, ownThird + 1, ownThird - 2, ownThird + 2)) {
+            addBlock(ownSecond, third, nearLimit)
+        }
 
         // 2. Our own /24 in the neighbour /16s.
         for (second in neighbourSeconds) {
-            if (second == ownSecond) continue
-            for (host in 1..254) add(second, ownThird, host)
+            if (second != ownSecond) addBlock(second, ownThird, nearLimit)
         }
 
-        // 3. First few hosts of every /24 around us.
-        for (host in 1..4) {
-            for (second in neighbourSeconds) {
-                for (third in 0..255) add(second, third, host)
-            }
+        // 3. The rest of our /16 and of the neighbour /16s.
+        for (second in neighbourSeconds) {
+            for (third in 0..255) addBlock(second, third, nearLimit)
         }
 
-        // 4. The rest, split evenly over every other /16 so no slice can starve another.
-        val otherSlices = (64..127).filter { it != ownSecond }
-        val remaining = maxHosts - out.size
-        val perSlice = if (otherSlices.isEmpty()) 0 else remaining / otherSlices.size
-        if (perSlice <= 0) return out
-
-        for (second in otherSlices) {
-            var added = 0
-            var host = 1
-            while (added < perSlice && host <= 254) {
-                for (third in 0..255) {
-                    if (added >= perSlice) break
-                    // Stagger the host per /24 so each block is sampled, not just the first one.
-                    var pick = host + ((second + third) % 4)
-                    if (pick > 254) pick -= 4
-                    val before = out.size
-                    add(second, third, pick)
-                    if (out.size > before) added++
+        // 4. The far slices, each with its reserved share, spread across the slice.
+        if (perFarSlice > 0) {
+            val stride = maxOf(1, 256 / perFarSlice)
+            for (second in otherSlices) {
+                var added = 0
+                var third = 0
+                while (added < perFarSlice && third <= 255) {
+                    if (addBlock(second, third, maxHosts)) added++
+                    third += stride
                 }
-                host += 4
+                // The stride can skip past 255 before the share is filled; top up from zero.
+                var fill = 0
+                while (added < perFarSlice && fill <= 255) {
+                    if (addBlock(second, fill, maxHosts)) added++
+                    fill++
+                }
             }
+        }
+
+        val out = ArrayList<String>(blocks.size * BLOCK)
+        for ((second, third) in blocks) {
+            for (host in 1..254) out.add("100.$second.$third.$host")
         }
         return out
     }

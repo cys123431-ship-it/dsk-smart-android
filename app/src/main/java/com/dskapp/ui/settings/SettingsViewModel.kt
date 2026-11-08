@@ -553,7 +553,9 @@ class SettingsViewModel(
             // once means "집 밖에서도 자동 연결" from then on. Only the phone's own 100.x
             // address is known here, so probe its neighbours and the likely blocks.
             if (found == null && snapshot.hasTailscale) {
-                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중…") }
+                // A tailnet has no subnet to walk, so this probes a few thousand addresses
+                // and takes up to a minute. Say so rather than looking frozen.
+                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중… (1분 정도 걸릴 수 있습니다)") }
                 val hosts = PcDiscovery.scanTailnet(snapshot.tailscaleIp, PcDiscovery.DEFAULT_PORT)
                 _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
                 found = tryCandidates(hosts.map { it.url }, secret)
