@@ -16,3 +16,6 @@ app/build/
 .kotlin/
 keystore.properties
 __pycache__/ 
+"build_v*.log"  
+"build_v*.done"  
+"_build.bat"  
