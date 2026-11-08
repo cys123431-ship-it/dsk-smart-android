@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -449,7 +450,8 @@ fun RemoteSection(
     onAutoConnect: () -> Unit,
     onUseKnownPc: (KnownPc) -> Unit,
     onForgetKnownPc: (String) -> Unit,
-    onOpenSessions: () -> Unit
+    onOpenSessions: () -> Unit,
+    onScanQr: () -> Unit
 ) {
     Text("PC goose 원격 조종", style = MaterialTheme.typography.titleMedium)
     Text(
@@ -467,8 +469,26 @@ fun RemoteSection(
         )
     }
 
-    // The one button most people need: the app scans Wi-Fi and Tailscale, finds the PC.
+    // The reliable path: the PC draws a code carrying its own address and key, and the phone
+    // reads it once. Nothing is guessed, so a moved IP or a rejected Origin cannot break it.
     Button(
+        onClick = onScanQr,
+        enabled = !isTesting,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Icon(Icons.Outlined.QrCodeScanner, contentDescription = null)
+        Spacer(Modifier.size(8.dp))
+        Text("PC 화면 QR 찍기")
+    }
+    Text(
+        "PC 의 DSK-Remote 창에 뜬 QR 을 찍으면 주소와 Secret Key 가 한 번에 들어옵니다. " +
+            "가장 빠르고 확실한 방법입니다.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    // Fallback for when the QR is not in reach: scan Wi-Fi and Tailscale for the PC.
+    OutlinedButton(
         onClick = onAutoConnect,
         enabled = !isDiscovering && !isTesting,
         modifier = Modifier.fillMaxWidth()
@@ -477,17 +497,17 @@ fun RemoteSection(
             CircularProgressIndicator(
                 modifier = Modifier.size(16.dp),
                 strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.size(8.dp))
             Text("PC 찾는 중…")
         } else {
-            Text("PC 자동 찾기")
+            Text("자동으로 찾기 (스캔)")
         }
     }
     Text(
-        "PC에서 DSK-Remote.bat이 실행 중이면, 주소를 몰라도 자동으로 찾아 연결합니다. " +
-            "같은 Wi-Fi는 물론 Tailscale로도 찾습니다.",
+        "QR 을 쓸 수 없을 때 씁니다. 같은 Wi-Fi 를 먼저, 그 다음 Tailscale 을 훑습니다. " +
+            "Tailscale 훑기는 1분 30초쯤 걸릴 수 있습니다.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )

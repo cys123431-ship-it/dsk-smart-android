@@ -6,6 +6,9 @@
     <!-- "PC 자동 찾기": reads the phone's Wi-Fi / Tailscale address to guess the PC's.
          Without it ConnectivityManager.allNetworks throws SecurityException. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.CAMERA" />
+<!-- The camera is only used to read the PC's pairing QR; the app works on phones without one. -->
+<uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Optional: voice dictation into documents -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

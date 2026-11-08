@@ -130,6 +130,12 @@ if not "!BUSY!"=="" (
     exit /b 1
 )
 
+echo   A QR window is opening next to this one. In the phone app:
+echo     Settings - PC goose remote - "PC 화면 QR 찍기" - point at that window.
+echo   Scanning once is all it takes: no address to type, no key to copy.
+echo.
+call :showqr
+
 echo   1. Start in background  ^(keeps running after this window and the goose app close^)
 echo   2. Start in this window ^(closing this window stops it^)
 echo   3. Stop the server
@@ -154,6 +160,7 @@ set "OK="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do set "OK=%%P"
 if defined OK (
     echo   Ready. Phone can connect.
+    echo   Scan the QR window with the phone app, or type the address above.
 ) else (
     echo   [!] The server did not come up. See server.log next to this file.
 )
@@ -215,6 +222,7 @@ for %%L in (%LANLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PO
 for %%L in (%TSLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
 
 echo.
+
 echo   Starting goose on 127.0.0.1:%GOOSEPORT% ...
 start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS% >> "%~dp0server.log" 2>&1"
 ping -n 6 127.0.0.1 >nul 2>&1
@@ -228,4 +236,19 @@ exit /b 0
 REM ---------- 3: stop ----------
 :stop
 call "%~dp0Stop-DSK-Remote.bat"
+exit /b 0
+REM ------------------------------------------------------------------
+REM  :showqr - draw the pairing QR in its own small window.
+REM
+REM  The window is started detached so this launcher never waits for it,
+REM  and it closes on its own once scanned-and-forgotten: the user simply
+REM  closes it. If python is absent the console addresses still work.
+REM ------------------------------------------------------------------
+:showqr
+set "QRLIST="
+for %%L in (%LANLIST%) do set "QRLIST=!QRLIST! -Lan %%L"
+for %%L in (%TSLIST%) do set "QRLIST=!QRLIST! -Ts %%L"
+if not exist "%~dp0show-qr.ps1" exit /b 0
+if "!QRLIST!"=="" exit /b 0
+start "" /d "%~dp0" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0show-qr.ps1" -Secret "%SECRET%" -Port %PORT% !QRLIST!
 exit /b 0

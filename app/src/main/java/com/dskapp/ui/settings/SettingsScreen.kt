@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,6 +37,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -282,8 +284,27 @@ fun SettingsScreen(
                 onAutoConnect = viewModel::autoConnect,
                 onUseKnownPc = viewModel::useKnownPc,
                 onForgetKnownPc = viewModel::forgetKnownPc,
-                onOpenSessions = onOpenRemoteSessions
+                onOpenSessions = onOpenRemoteSessions,
+                onScanQr = { viewModel.onQrScannerVisibilityChange(true) }
             )
+
+            if (state.isScanningQr) {
+                QrScanner(
+                    onResult = viewModel::applyPcQr,
+                    onCancel = { viewModel.onQrScannerVisibilityChange(false) }
+                )
+            }
+
+            state.qrMessage?.let { message ->
+                AlertDialog(
+                    onDismissRequest = viewModel::dismissQrMessage,
+                    confirmButton = {
+                        TextButton(onClick = viewModel::dismissQrMessage) { Text("확인") }
+                    },
+                    title = { Text("PC 와 연결하지 못했습니다") },
+                    text = { Text(message) }
+                )
+            }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 

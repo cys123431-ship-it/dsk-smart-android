@@ -22,6 +22,7 @@ import com.dskapp.data.remote.AcpClient
 import com.dskapp.data.remote.AcpJson
 import com.dskapp.data.remote.KnownPc
 import com.dskapp.data.remote.NetworkRoute
+import com.dskapp.data.remote.PairingCode
 import com.dskapp.data.remote.PcDiscovery
 import com.dskapp.agent.AgentLevel
 import com.dskapp.ui.lock.AppLock
@@ -79,7 +80,11 @@ data class SettingsUiState(
     /** Remembers PCs that connected before, newest first. */
     val knownPcs: List<KnownPc> = emptyList(),
     /** How this phone can reach the PC right now (Wi-Fi address, Tailscale, subnet). */
-    val networkSummary: String = ""
+    val networkSummary: String = "",
+    /** True while the QR scanner camera is open; it is shut as soon as a code is read. */
+    val isScanningQr: Boolean = false,
+    /** Shown when the camera cannot start; the section then explains the manual way. */
+    val qrMessage: String? = null
 )
 
 /**
@@ -447,6 +452,89 @@ class SettingsViewModel(
                 isRemoteEditing = false
             )
         }
+    }
+
+    fun onQrScannerVisibilityChange(visible: Boolean) {
+        _uiState.update { it.copy(isScanningQr = visible) }
+    }
+
+    /**
+     * A QR code read from the PC's DSK-Remote window. The code carries the address *and* the
+     * key, so one scan replaces both the scanning and the typing. The address is tried
+     * straight away: a code that does not answer the ACP handshake is a stale one (old IP,
+     * different key) and saying so is more useful than silently saving it.
+     */
+    fun applyPcQr(raw: String) {
+        _uiState.update { it.copy(isScanningQr = false) }
+        val pair = PairingCode.parse(raw)
+        if (pair == null) {
+            _uiState.update { it.copy(qrMessage = "이 QR 은 DSK 페어링 코드가 아닙니다. PC 화면의 DSK-Remote 창에 있는 QR 을 찍어 주세요.") }
+            return
+        }
+        val url = AcpJson.normalizeServerUrl(pair.address)
+        if (url.isBlank()) {
+            _uiState.update { it.copy(qrMessage = "QR 에 적힌 주소를 읽을 수 없습니다.") }
+            return
+        }
+        if (pair.secret.length < 8) {
+            _uiState.update { it.copy(qrMessage = "QR 의 Secret Key 가 올바르지 않습니다. PC 화면의 QR 을 다시 찍어 주세요.") }
+            return
+        }
+        if (_uiState.value.isRemoteTesting) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isRemoteTesting = true,
+                    isRemoteEditing = false,
+                    remoteUrl = url,
+                    remoteSecret = pair.secret,
+                    qrMessage = null,
+                    remoteStatus = "QR 의 주소로 연결하는 중… (${pair.address})"
+                )
+            }
+            val client = AcpClient(aiClient.testHttpClient(), url, pair.secret)
+            val startedAt = System.currentTimeMillis()
+            val status = try {
+                client.connect()
+                val init = client.initialize()
+                val elapsed = System.currentTimeMillis() - startedAt
+                val pc = KnownPc(
+                    address = pair.address,
+                    name = pair.name.ifBlank { "PC" },
+                    kind = pair.kind,
+                    lastUsed = System.currentTimeMillis()
+                )
+                // Leaving the manual edit open would let a stale field overwrite the scanned
+                // address on the next save, so the scan saves the connection itself.
+                repository.saveRemote(url, pair.secret, _uiState.value.remoteCwd.trim(), _uiState.value.remoteMode)
+                repository.rememberPc(pc)
+                buildString {
+                    append("PC 를 찾았습니다 (").append(elapsed).append("ms)")
+                    if (init.agentName.isNotBlank()) append(" · ").append(init.agentName)
+                    if (init.agentVersion.isNotBlank()) append(' ').append(init.agentVersion)
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: e::class.java.simpleName
+                ErrorLog.record("remote", "qr pairing failed: $msg")
+                "QR 은 읽었지만 연결하지 못했습니다: $msg · PC 에서 DSK-Remote.bat 이 켜져 있는지, 같은 Wi-Fi 또는 Tailscale 인지 확인해 주세요."
+            } finally {
+                runCatching { client.close() }
+            }
+            _uiState.update {
+                it.copy(
+                    isRemoteTesting = false,
+                    isRemoteEditing = status.startsWith("PC 를 찾았습니다"),
+                    remoteSecret = if (status.startsWith("PC 를 찾았습니다")) "" else it.remoteSecret,
+                    hasRemoteSecret = repository.remoteSecret().isNotBlank(),
+                    knownPcs = repository.knownPcs(),
+                    remoteStatus = status
+                )
+            }
+        }
+    }
+
+    fun dismissQrMessage() {
+        _uiState.update { it.copy(qrMessage = null) }
     }
 
     /** Opens a throwaway ACP connection, runs initialize and reports agent + mode support. */
