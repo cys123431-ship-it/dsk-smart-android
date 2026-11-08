@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +59,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.dskapp.agent.AgentBridge
 import com.dskapp.agent.AgentLevel
+import com.dskapp.data.remote.KnownPc
 import com.dskapp.data.commands.CommandApplier
 import kotlin.math.roundToInt
 import com.dskapp.data.commands.PromptCommand
@@ -433,6 +436,9 @@ fun RemoteSection(
     mode: String,
     hasSecret: Boolean,
     isTesting: Boolean,
+    isDiscovering: Boolean,
+    knownPcs: List<KnownPc>,
+    networkSummary: String,
     status: String?,
     onUrl: (String) -> Unit,
     onSecret: (String) -> Unit,
@@ -440,51 +446,126 @@ fun RemoteSection(
     onMode: (String) -> Unit,
     onSave: () -> Unit,
     onTest: () -> Unit,
+    onAutoConnect: () -> Unit,
+    onUseKnownPc: (KnownPc) -> Unit,
+    onForgetKnownPc: (String) -> Unit,
     onOpenSessions: () -> Unit
 ) {
     Text("PC goose 원격 조종", style = MaterialTheme.typography.titleMedium)
     Text(
-        "집 PC에서 goose 데스크톱을 실행해 두면, 폰 채팅에서 명령해 PC의 goose가 그대로 일합니다. " +
-            "PC에 쌓인 대화 목록을 골라서 이어갈 수도 있어요.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-    Text(
-        "PC에서 (PowerShell):\n" +
-            "\$env:GOOSE_SERVER__SECRET_KEY=\"임의의긴비밀키\"\n" +
-            "goose serve --host 0.0.0.0 --port 3284\n" +
-            "집 밖에서도 접속하려면 Tailscale 설치 후 PC의 100.x.x.x 주소를 적으면 됩니다(포트 포워딩 불필요).",
+        "집 PC에서 goose를 켜 두면, 이 앱에서 명령해 PC의 goose가 그대로 일합니다. " +
+            "PC에 쌓인 대화 목록을 골라 이어갈 수도 있어요.",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
 
-    OutlinedTextField(
-        value = url,
-        onValueChange = onUrl,
-        label = { Text("PC 주소") },
-        placeholder = { Text("ws://100.64.0.5:3284/acp") },
-        singleLine = true,
-        supportingText = { Text("포트만 적어도 ws://…:3284/acp 로 맞춰 줍니다.") },
+    if (networkSummary.isNotBlank()) {
+        Text(
+            text = "지금 이 폰: $networkSummary",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    // The one button most people need: the app scans the Wi-Fi network and finds the PC.
+    Button(
+        onClick = onAutoConnect,
+        enabled = !isDiscovering && !isTesting,
         modifier = Modifier.fillMaxWidth()
+    ) {
+        if (isDiscovering) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(Modifier.size(8.dp))
+            Text("PC 찾는 중…")
+        } else {
+            Text("PC 자동 찾기")
+        }
+    }
+    Text(
+        "PC에서 DSK-Remote.bat이 실행 중이면, 주소를 몰라도 자동으로 찾아 연결합니다.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
     )
-    OutlinedTextField(
-        value = secret,
-        onValueChange = onSecret,
-        label = { Text("Secret Key") },
-        placeholder = { Text(if (hasSecret) "저장됨 (바꿀 때만 입력)" else "GOOSE_SERVER__SECRET_KEY 값") },
-        singleLine = true,
-        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-        modifier = Modifier.fillMaxWidth()
-    )
-    OutlinedTextField(
-        value = cwd,
-        onValueChange = onCwd,
-        label = { Text("작업 폴더 (PC 경로)") },
-        placeholder = { Text("C:\\Users\\me\\work\\project") },
-        singleLine = true,
-        supportingText = { Text("비우면 goose 기본 폴더에서 시작합니다. 세션 목록도 이 폴더 기준으로 걸러집니다.") },
-        modifier = Modifier.fillMaxWidth()
-    )
+
+    if (knownPcs.isNotEmpty()) {
+        Text(
+            "이전에 연결한 PC",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        knownPcs.forEach { pc ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(pc.address, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        if (pc.isTailscale) "Tailscale · 집 밖에서도 접속" else "Wi-Fi",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = { onUseKnownPc(pc) }) { Text("사용") }
+                IconButton(onClick = { onForgetKnownPc(pc.address) }) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = "이 PC 지우기"
+                    )
+                }
+            }
+        }
+    }
+
+    var showManual by remember { mutableStateOf(false) }
+    TextButton(onClick = { showManual = !showManual }) {
+        Text(if (showManual) "직접 입력 닫기" else "주소 · Secret 직접 입력")
+    }
+
+    if (showManual) {
+        OutlinedTextField(
+            value = url,
+            onValueChange = onUrl,
+            label = { Text("PC 주소") },
+            placeholder = { Text("192.168.0.10:3284") },
+            singleLine = true,
+            supportingText = { Text("포트만 적어도 ws://…:3284/acp 로 맞춰 줍니다.") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = secret,
+            onValueChange = onSecret,
+            label = { Text("Secret Key") },
+            placeholder = { Text(if (hasSecret) "저장됨 (바꿀 때만 입력)" else "DSK-Remote.bat 화면의 Secret Key") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = cwd,
+            onValueChange = onCwd,
+            label = { Text("작업 폴더 (PC 경로)") },
+            placeholder = { Text("C:\\Users\\me\\work\\project") },
+            singleLine = true,
+            supportingText = { Text("비우면 goose 기본 폴더에서 시작합니다.") },
+            modifier = Modifier.fillMaxWidth()
+        )
+    } else {
+        // Secret is needed once, before the scan can prove which PC is ours.
+        OutlinedTextField(
+            value = secret,
+            onValueChange = onSecret,
+            label = { Text("Secret Key") },
+            placeholder = { Text(if (hasSecret) "저장됨 (바꿀 때만 입력)" else "DSK-Remote.bat 화면의 Secret Key") },
+            singleLine = true,
+            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 
     Text("권한 모드", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -504,7 +585,7 @@ fun RemoteSection(
     )
 
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = onSave) { Text("원격 설정 저장") }
+        OutlinedButton(onClick = onSave) { Text("설정 저장") }
         OutlinedButton(onClick = onTest, enabled = !isTesting) {
             if (isTesting) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -515,11 +596,11 @@ fun RemoteSection(
         OutlinedButton(onClick = onOpenSessions) { Text("PC 대화 목록") }
     }
     status?.let {
+        val failed = it.contains("실패") || it.contains("못했습니다")
         Text(
             text = it,
             style = MaterialTheme.typography.bodySmall,
-            color = if (it.startsWith("연결 실패")) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.primary
+            color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
         )
     }
 }

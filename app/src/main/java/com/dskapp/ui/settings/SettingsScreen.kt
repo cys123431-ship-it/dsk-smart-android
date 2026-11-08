@@ -265,6 +265,9 @@ fun SettingsScreen(
                 mode = state.remoteMode,
                 hasSecret = state.hasRemoteSecret,
                 isTesting = state.isRemoteTesting,
+                isDiscovering = state.isDiscovering,
+                knownPcs = state.knownPcs,
+                networkSummary = state.networkSummary,
                 status = state.remoteStatus,
                 onUrl = viewModel::onRemoteUrlChange,
                 onSecret = viewModel::onRemoteSecretChange,
@@ -272,6 +275,9 @@ fun SettingsScreen(
                 onMode = viewModel::onRemoteModeChange,
                 onSave = viewModel::saveRemoteSettings,
                 onTest = viewModel::testRemote,
+                onAutoConnect = viewModel::autoConnect,
+                onUseKnownPc = viewModel::useKnownPc,
+                onForgetKnownPc = viewModel::forgetKnownPc,
                 onOpenSessions = onOpenRemoteSessions
             )
 

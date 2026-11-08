@@ -20,6 +20,9 @@ import com.dskapp.data.commands.PromptCommand
 import com.dskapp.data.log.ErrorLog
 import com.dskapp.data.remote.AcpClient
 import com.dskapp.data.remote.AcpJson
+import com.dskapp.data.remote.KnownPc
+import com.dskapp.data.remote.NetworkRoute
+import com.dskapp.data.remote.PcDiscovery
 import com.dskapp.agent.AgentLevel
 import com.dskapp.ui.lock.AppLock
 import com.dskapp.data.settings.SettingsRepository
@@ -68,7 +71,15 @@ data class SettingsUiState(
     val isRemoteTesting: Boolean = false,
     /** True while the user is typing in the remote fields; the state collector leaves them alone. */
     val isRemoteEditing: Boolean = false,
-    val remoteStatus: String? = null
+    val remoteStatus: String? = null,
+    /** True while the phone is scanning the LAN for a PC running the DSK server. */
+    val isDiscovering: Boolean = false,
+    /** Addresses where the DSK port answered; the user picks one or it is auto-used. */
+    val discoveredPcs: List<String> = emptyList(),
+    /** Remembers PCs that connected before, newest first. */
+    val knownPcs: List<KnownPc> = emptyList(),
+    /** How this phone can reach the PC right now (Wi-Fi address, Tailscale, subnet). */
+    val networkSummary: String = ""
 )
 
 /**
@@ -104,7 +115,8 @@ class SettingsViewModel(
             remoteUrl = repository.state.value.remoteUrl,
             remoteCwd = repository.state.value.remoteCwd,
             remoteMode = repository.state.value.remoteMode,
-            hasRemoteSecret = repository.state.value.hasRemoteSecret
+            hasRemoteSecret = repository.state.value.hasRemoteSecret,
+            knownPcs = repository.knownPcs()
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -112,6 +124,7 @@ class SettingsViewModel(
     init {
         refreshErrorLog()
         verifyStoredKey()
+        refreshNetwork()
         // Usage and stored settings change from other screens (chat writes tokens, the theme
         // can be toggled elsewhere); recombine so cost and appearance stay in sync without
         // the screen re-reading the repository on every recomposition.
@@ -450,10 +463,21 @@ class SettingsViewModel(
             val secret = state.remoteSecret.trim().ifBlank { repository.remoteSecret() }
             val client = AcpClient(aiClient.testHttpClient(), url, secret)
             val startedAt = System.currentTimeMillis()
+            var connected = false
             val status = try {
                 client.connect()
                 val init = client.initialize()
                 val elapsed = System.currentTimeMillis() - startedAt
+                // The handshake worked, so this address is good: remember it for next time.
+                repository.rememberPc(
+                    KnownPc(
+                        address = state.remoteUrl.trim(),
+                        name = if (state.remoteUrl.contains("100.")) "Tailscale" else "Wi-Fi",
+                        kind = if (state.remoteUrl.contains("100.")) KnownPc.KIND_TAILSCALE else KnownPc.KIND_LAN,
+                        lastUsed = System.currentTimeMillis()
+                    )
+                )
+                connected = true
                 buildString {
                     append("연결 성공 (").append(elapsed).append("ms)")
                     if (init.agentName.isNotBlank()) append(" · ").append(init.agentName)
@@ -469,8 +493,135 @@ class SettingsViewModel(
             } finally {
                 runCatching { client.close() }
             }
-            _uiState.update { it.copy(isRemoteTesting = false, remoteStatus = status) }
+            _uiState.update {
+                it.copy(
+                    isRemoteTesting = false,
+                    remoteStatus = status,
+                    knownPcs = if (connected) repository.knownPcs() else it.knownPcs
+                )
+            }
         }
+    }
+
+    /** Refreshes how this phone can reach the PC (Wi-Fi address, Tailscale, subnet). */
+    fun refreshNetwork() {
+        val snapshot = NetworkRoute.snapshot(appContext)
+        val summary = buildString {
+            when {
+                snapshot.isOnLan -> append("Wi-Fi ").append(snapshot.localIp)
+                else -> append("Wi-Fi 연결 없음")
+            }
+            if (snapshot.hasTailscale) {
+                append(" · Tailscale ").append(snapshot.tailscaleIp)
+            } else {
+                append(" · Tailscale 연결 안 됨")
+            }
+        }
+        _uiState.update { it.copy(networkSummary = summary, knownPcs = repository.knownPcs()) }
+    }
+
+    /**
+     * Pressed once when the user opens the remote section: tries every address the app
+     * already knows (newest first), then scans the local network. The first address that
+     * answers the ACP handshake becomes the saved one, so the user never types an IP.
+     */
+    fun autoConnect() {
+        val state = _uiState.value
+        if (state.isRemoteTesting || state.isDiscovering) return
+        val secret = state.remoteSecret.trim().ifBlank { repository.remoteSecret() }
+        if (secret.isBlank()) {
+            _uiState.update { it.copy(remoteStatus = "PC의 Secret Key를 한 번만 입력해 주세요. (DSK-Remote.bat 화면에 나옵니다)") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDiscovering = true, remoteStatus = "PC를 찾는 중…") }
+            refreshNetwork()
+            val snapshot = NetworkRoute.snapshot(appContext)
+            val candidates = buildList {
+                // Remembered addresses first: they worked before and they are instant to test.
+                addAll(repository.knownPcs().map { it.address })
+                // The Tailscale address never changes, so it is worth a direct try.
+                if (snapshot.hasTailscale) add(snapshot.tailscaleIp + ":" + PcDiscovery.DEFAULT_PORT)
+                if (state.remoteUrl.isNotBlank()) add(AcpJson.normalizeServerUrl(state.remoteUrl))
+            }.distinct()
+
+            var found: KnownPc? = tryCandidates(candidates, secret)
+
+            if (found == null && snapshot.isOnLan) {
+                _uiState.update { it.copy(remoteStatus = "Wi-Fi에서 PC를 찾는 중… (${snapshot.lanSubnet}.0)") }
+                val hosts = PcDiscovery.scanSubnet(snapshot.lanSubnet, PcDiscovery.DEFAULT_PORT, snapshot.localIp)
+                _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
+                found = tryCandidates(hosts.map { it.url }, secret)
+            }
+
+            if (found != null) {
+                repository.rememberPc(found)
+                _uiState.update {
+                    it.copy(
+                        isDiscovering = false,
+                        isRemoteEditing = false,
+                        remoteUrl = found.address,
+                        hasRemoteSecret = true,
+                        knownPcs = repository.knownPcs(),
+                        remoteStatus = "PC를 찾았습니다 · ${found.address} (${if (found.isTailscale) "Tailscale" else "Wi-Fi"})"
+                    )
+                }
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isDiscovering = false,
+                        knownPcs = repository.knownPcs(),
+                        remoteStatus = "PC를 찾지 못했습니다. PC에서 DSK-Remote.bat이 실행 중인지 확인해 주세요."
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Tries each address until the ACP handshake succeeds. Bad addresses are skipped
+     * quietly; only success produces a [KnownPc].
+     */
+    private suspend fun tryCandidates(addresses: List<String>, secret: String): KnownPc? {
+        for (address in addresses) {
+            val url = AcpJson.normalizeServerUrl(address)
+            if (url.isBlank()) continue
+            val client = AcpClient(aiClient.testHttpClient(), url, secret)
+            val ok = runCatching {
+                client.connect()
+                client.initialize()
+                true
+            }.getOrDefault(false)
+            runCatching { client.close() }
+            if (ok) {
+                val isTs = url.contains("100.") || address.contains("100.")
+                return KnownPc(
+                    address = address.trim(),
+                    name = if (isTs) "Tailscale" else "Wi-Fi",
+                    kind = if (isTs) KnownPc.KIND_TAILSCALE else KnownPc.KIND_LAN,
+                    lastUsed = System.currentTimeMillis()
+                )
+            }
+        }
+        return null
+    }
+
+    /** Uses a remembered PC without scanning. */
+    fun useKnownPc(pc: KnownPc) {
+        repository.rememberPc(pc.copy(lastUsed = System.currentTimeMillis()))
+        _uiState.update {
+            it.copy(
+                remoteUrl = pc.address,
+                isRemoteEditing = false,
+                knownPcs = repository.knownPcs(),
+                remoteStatus = "PC 주소를 '${pc.address}'로 설정했습니다."
+            )
+        }
+    }
+
+    fun forgetKnownPc(address: String) {
+        repository.forgetPc(address)
+        _uiState.update { it.copy(knownPcs = repository.knownPcs()) }
     }
 
     /** The lock needs a phone PIN / pattern / password to fall back on. */

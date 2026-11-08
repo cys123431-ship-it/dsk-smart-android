@@ -7,6 +7,8 @@ import com.dskapp.agent.AgentLevel
 import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.ai.ProviderConfig
 import com.dskapp.data.ai.TokenUsage
+import com.dskapp.data.remote.KnownPc
+import com.dskapp.data.remote.KnownPcsCodec
 import com.dskapp.data.search.SearchProviderType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -169,6 +171,34 @@ class SettingsRepository(context: Context) {
 
     fun saveRemoteMode(mode: String) {
         prefs.edit { putString(KEY_REMOTE_MODE, mode.trim()) }
+        refresh()
+    }
+
+    /** PCs this phone has connected to, newest first. */
+    fun knownPcs(): List<KnownPc> =
+        KnownPcsCodec.decode(prefs.getString(KEY_REMOTE_KNOWN, null))
+
+    /**
+     * Remembers [pc] so the next launch can offer it (or fall back to it) without a scan.
+     * Also makes it the active address, because a successful connection means it works.
+     */
+    fun rememberPc(pc: KnownPc) {
+        val merged = KnownPcsCodec.merge(knownPcs(), pc)
+        prefs.edit {
+            putString(KEY_REMOTE_KNOWN, KnownPcsCodec.encode(merged))
+            putString(KEY_REMOTE_URL, pc.address.trim().trimEnd('/'))
+        }
+        refresh()
+    }
+
+    fun forgetPc(address: String) {
+        val remaining = knownPcs().filterNot { it.address.equals(address, ignoreCase = true) }
+        prefs.edit { putString(KEY_REMOTE_KNOWN, KnownPcsCodec.encode(remaining)) }
+        refresh()
+    }
+
+    fun clearKnownPcs() {
+        prefs.edit { remove(KEY_REMOTE_KNOWN) }
         refresh()
     }
 
@@ -402,6 +432,7 @@ class SettingsRepository(context: Context) {
         private const val KEY_REMOTE_SECRET_ENC = "remote_goose_secret_enc"
         private const val KEY_REMOTE_CWD = "remote_goose_cwd"
         private const val KEY_REMOTE_MODE = "remote_goose_mode"
+        private const val KEY_REMOTE_KNOWN = "remote_goose_known_pcs"
         private const val KEY_USAGE_MONTH = "usage_month"
         private const val KEY_USAGE_IN = "usage_prompt_tokens"
         private const val KEY_USAGE_OUT = "usage_completion_tokens"
