@@ -13,15 +13,17 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,36 +36,62 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 
 /**
- * Camera QR reader for the PC pairing code.
+ * Camera QR reader for the PC pairing code, shown full screen.
  *
- * CameraX delivers frames as YUV 4:2:0; a black-and-white QR only needs the luma plane, so
- * the frame is handed to zxing as a [PlanarYUVLuminanceSource] with no Bitmap conversion.
- * Decoding runs on one background thread and a frame is skipped while the previous one is
- * still being decoded, so a slow phone cannot build up a queue of stale frames.
+ * Why full screen and not a block inside the settings column: that column scrolls, so its
+ * height is unbounded, and an `aspectRatio` child under an unbounded height constraint throws
+ * on layout - which is exactly how the first version of this screen crashed. A dialog always
+ * has the window's height, so the preview gets a real size.
+ *
+ * CameraX hands frames over as YUV 4:2:0. A QR is black and white, so only the luma plane is
+ * needed: it goes to zxing as a [PlanarYUVLuminanceSource] with no Bitmap round trip. Decoding
+ * runs on one background thread, and [ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST] drops frames
+ * that arrive while the previous one is still being read, so a slow phone never queues up.
  */
 @SuppressLint("UnsafeOptInUsageError")
 @Composable
 fun QrScanner(
     onResult: (String) -> Unit,
-    onCancel: () -> Unit,
-    modifier: Modifier = Modifier
+    onCancel: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)
+    ) {
+        QrScannerContent(onResult = onResult, onCancel = onCancel)
+    }
+}
+
+@SuppressLint("UnsafeOptInUsageError")
+@Composable
+private fun QrScannerContent(
+    onResult: (String) -> Unit,
+    onCancel: () -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnResult by rememberUpdatedState(onResult)
+
     var permissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -71,11 +99,12 @@ fun QrScanner(
         )
     }
     var cameraError by remember { mutableStateOf<String?>(null) }
+    var cameraReady by remember { mutableStateOf(false) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionGranted = granted
         if (!granted) {
-            cameraError = "카메라 권한이 없어 QR 을 찍을 수 없습니다. 휴대폰 설정에서 DSK 스마트의 카메라 권한을 켜 주세요."
+            cameraError = "카메라 권한이 없어 QR 을 찍을 수 없습니다.\n휴대폰 설정에서 DSK 스마트의 카메라 권한을 켜 주세요."
         }
     }
     LaunchedEffect(Unit) {
@@ -91,43 +120,80 @@ fun QrScanner(
     val decoder = remember { QrDecoder() }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
-    DisposableEffect(permissionGranted, lifecycleOwner) {
+    DisposableEffect(permissionGranted, lifecycleOwner, previewView) {
         if (!permissionGranted) return@DisposableEffect onDispose { }
+
+        // The camera provider arrives asynchronously. If the screen is closed before it does,
+        // binding then would touch a preview that is already gone, which takes the app down.
+        var disposed = false
+        var cameraProvider: ProcessCameraProvider? = null
+        var analysis: ImageAnalysis? = null
+        // CameraX does not expose whether an analyzer is still attached, so it is tracked here:
+        // the camera is unbound when the app leaves the foreground and rebound on return.
+        var bound = false
         val future = ProcessCameraProvider.getInstance(context)
-        var provider: ProcessCameraProvider? = null
-        future.addListener({
-            try {
-                val cameraProvider = future.get()
-                provider = cameraProvider
-                val preview = Preview.Builder().build().also {
-                    it.surfaceProvider = previewView.surfaceProvider
+
+        // Stop the camera when the app goes to the background, start it again on return.
+        val observer = LifecycleEventObserver { _, event ->
+            if (disposed) return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_STOP -> runCatching {
+                    analysis?.clearAnalyzer()
+                    cameraProvider?.unbindAll()
+                    bound = false
+                    cameraReady = false
                 }
-                val analysis = ImageAnalysis.Builder()
+                Lifecycle.Event.ON_START -> {
+                    val provider = cameraProvider ?: return@LifecycleEventObserver
+                    val imageAnalysis = analysis ?: return@LifecycleEventObserver
+                    if (bound) {
+                        cameraReady = true
+                    } else {
+                        bindCamera(provider, lifecycleOwner, previewView, imageAnalysis, decoder, analysisExecutor) { text ->
+                            currentOnResult(text)
+                        }.onSuccess {
+                            bound = true
+                            cameraReady = true
+                        }.onFailure { e ->
+                            cameraError = "카메라를 켜지 못했습니다: ${e.message ?: e::class.java.simpleName}"
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        future.addListener({
+            if (disposed) return@addListener
+            try {
+                val provider = future.get()
+                cameraProvider = provider
+                val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setTargetResolution(Size(1280, 720))
                     .build()
-                analysis.setAnalyzer(analysisExecutor) { image: ImageProxy ->
-                    val text = decoder.decode(image)
-                    image.close()
-                    if (text != null) {
-                        analysis.clearAnalyzer()
-                        currentOnResult(text)
-                    }
+                analysis = imageAnalysis
+                bindCamera(provider, lifecycleOwner, previewView, imageAnalysis, decoder, analysisExecutor) { text ->
+                    currentOnResult(text)
+                }.onSuccess {
+                    bound = true
+                    cameraReady = true
+                }.onFailure { e ->
+                    cameraError = "카메라를 켜지 못했습니다: ${e.message ?: e::class.java.simpleName}"
                 }
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
-                    preview,
-                    analysis
-                )
             } catch (e: Exception) {
-                cameraError = "카메라를 켜지 못했습니다: ${e.message ?: e::class.java.simpleName}"
+                if (!disposed) {
+                    cameraError = "카메라를 켜지 못했습니다: ${e.message ?: e::class.java.simpleName}"
+                }
             }
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
-            runCatching { provider?.unbindAll() }
+            disposed = true
+            runCatching { lifecycleOwner.lifecycle.removeObserver(observer) }
+            runCatching { analysis?.clearAnalyzer() }
+            runCatching { cameraProvider?.unbindAll() }
         }
     }
 
@@ -138,47 +204,111 @@ fun QrScanner(
         }
     }
 
-    Column(modifier = modifier) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .background(Color.Black),
-            contentAlignment = Alignment.Center
-        ) {
-            if (permissionGranted) {
-                AndroidView(factory = { previewView }, modifier = Modifier.fillMaxWidth())
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+        Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+            Text(
+                text = "PC 화면의 QR 을 사각형 안에 맞춰 주세요",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                if (permissionGranted) {
+                    AndroidView(
+                        factory = { previewView },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (permissionGranted && !cameraReady) {
+                    Text(
+                        text = "카메라 준비 중…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White
+                    )
+                }
+                // A frame that shows the user where to aim; the decoder reads the whole image.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.7f)
+                        .aspectRatio(1f)
+                )
             }
-            Text(
-                text = "PC 의 DSK-Remote 창에 있는 QR 을 화면 안에 맞춰 주세요",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White
-            )
-        }
-        cameraError?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 8.dp)
-            )
-        }
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.Center
-        ) {
-            TextButton(onClick = onCancel) { Text("닫기") }
+
+            cameraError?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFF8A80),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)
+                )
+            }
+
+            Button(
+                onClick = onCancel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 20.dp)
+            ) {
+                Text("닫기")
+            }
         }
     }
 }
 
 /**
+ * Binds preview + analysis and starts feeding frames to [onDecoded].
+ *
+ * The rear camera is preferred; a phone that has none (or refuses it) still scans with the
+ * front one. Failures come back as a [Result] instead of throwing, so the screen can say what
+ * went wrong rather than crashing.
+ */
+private fun bindCamera(
+    provider: ProcessCameraProvider,
+    lifecycleOwner: LifecycleOwner,
+    previewView: PreviewView,
+    analysis: ImageAnalysis,
+    decoder: QrDecoder,
+    executor: Executor,
+    onDecoded: (String) -> Unit
+): Result<Unit> = runCatching {
+    val preview = Preview.Builder().build().also {
+        it.surfaceProvider = previewView.surfaceProvider
+    }
+    analysis.setAnalyzer(executor) { image: ImageProxy ->
+        val text = try {
+            decoder.decode(image)
+        } finally {
+            image.close()
+        }
+        if (text != null) {
+            analysis.clearAnalyzer()
+            onDecoded(text)
+        }
+    }
+
+    val hasRear = runCatching { provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) }
+        .getOrDefault(false)
+    val selector = if (hasRear) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
+
+    provider.unbindAll()
+    provider.bindToLifecycle(lifecycleOwner, selector, preview, analysis)
+}
+
+/**
  * Turns one camera frame into QR text, or null when the frame holds no readable code.
  *
- * Rear cameras usually deliver frames rotated by 90°, which is passed to zxing as a rotated
- * source instead of rotating pixels. Only QR codes are tried: asking for every barcode
- * format would triple the work per frame.
+ * Rear cameras usually deliver frames rotated by 90 degrees; that is passed to zxing as a
+ * rotated source instead of rotating pixels. Only QR codes are attempted, since asking for
+ * every barcode format would triple the work per frame.
  */
 private class QrDecoder {
 
