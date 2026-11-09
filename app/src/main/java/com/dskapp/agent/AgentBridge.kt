@@ -13,9 +13,11 @@ import com.dskapp.ui.chat.ChatViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -93,9 +95,21 @@ object AgentBridge {
         val level = if (settings.agentLevel == AgentLevel.READ) AgentLevel.READ else AgentLevel.NAVIGATE
         return runCatching {
             withContext(svc.scope.coroutineContext) {
-                svc.overlay.show(onStop = { })
+                // The run is its own child so the overlay's 중지 button can cancel just the run
+                // (it used to do nothing here) and the task still records why it ended.
+                val run = async {
+                    PhoneAgentRunner(svc).run(goal, level, settings.agentMaxSteps, model, unattended = true)
+                }
+                svc.overlay.show(onStop = { run.cancel() })
                 try {
-                    val outcome = PhoneAgentRunner(svc).run(goal, level, settings.agentMaxSteps, model, unattended = true)
+                    val outcome = try {
+                        run.await()
+                    } catch (e: CancellationException) {
+                        // Only a stop of the run itself becomes a result; if the whole task is
+                        // being cancelled, let that cancellation through.
+                        if (!isActive || !run.isCancelled) throw e
+                        AgentOutcome("중지 버튼을 눌러 멈췄습니다.", emptyList(), finished = false)
+                    }
                     formatRecord(outcome)
                 } finally {
                     svc.overlay.hide()

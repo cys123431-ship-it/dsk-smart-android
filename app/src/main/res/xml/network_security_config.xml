@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The PC remote (goose) is reached as ws://<PC address>:3284/acp - plain WebSocket, because
+  goose serve on the PC has no certificate. Since targetSdk 28 Android blocks every cleartext
+  connection unless the app opts in, and OkHttp then refuses the handshake with
+  "CLEARTEXT communication ... not permitted", so the phone could never reach the PC.
+
+  The PC address is not known in advance (home Wi-Fi 192.168.x, Tailscale 100.x, or a
+  MagicDNS name) and domain-config cannot express IP ranges, so cleartext is allowed for the
+  app as a whole. The AI provider and web search keep using https:// URLs; the PC link is
+  protected by its Secret Key and, off the home network, by Tailscale's own encryption.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

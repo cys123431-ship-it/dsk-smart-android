@@ -9,16 +9,32 @@
 
   If python is missing the window simply says so; the addresses are already
   printed in the console, so pairing still works by hand.
+
+  The key arrives in the DSK_QR_SECRET environment variable (DSK-Remote.bat sets it), not on
+  the command line, where any process listing would show it. -Secret still works for testing.
+  The PNGs hold the key too: they are released and deleted when the window closes, and any
+  left behind by an earlier run (older versions kept them locked) are removed at start.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Secret,
+    [string]$Secret = '',
     [Parameter(Mandatory = $true)][int]$Port,
     [string[]]$Lan = @(),
     [string[]]$Ts = @()
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $Secret) { $Secret = $env:DSK_QR_SECRET }
+Remove-Item Env:\DSK_QR_SECRET -ErrorAction SilentlyContinue
+if (-not $Secret) {
+    Write-Output 'NO_SECRET'
+    exit 1
+}
+
+# Pairing images from earlier runs: they contain the key, so they must not pile up in TEMP.
+Get-ChildItem -Path $env:TEMP -Filter 'dsk_qr_*.png' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $gen = Join-Path $here 'qrcode_gen\qr_png.py'
@@ -50,6 +66,7 @@ function New-QrPng([string]$python, [string]$text, [string]$out, [int]$target) {
 function Invoke-QrWindow {
     param($Codes)
 
+    $images = @()
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
@@ -96,7 +113,10 @@ function Invoke-QrWindow {
         $picture.SizeMode = 'Zoom'
         $picture.BorderStyle = 'FixedSingle'
         $picture.SetBounds(($x + 30), $y, ($cellW - 60), ($cellW - 60))
+        # Image.FromFile keeps the file locked until the image is disposed; without the
+        # Dispose below the PNG (which contains the key) could never be deleted.
         $image = [System.Drawing.Image]::FromFile($code.Path)
+        $images += $image
         $picture.Image = $image
         $form.Controls.Add($picture)
 
@@ -111,8 +131,12 @@ function Invoke-QrWindow {
     }
 
     $form.Add_Shown({ $form.Activate() })
-    [void]$form.ShowDialog()
-    $form.Dispose()
+    try {
+        [void]$form.ShowDialog()
+    } finally {
+        $form.Dispose()
+        foreach ($img in $images) { $img.Dispose() }
+    }
 }
 
 # ---- build the codes ----

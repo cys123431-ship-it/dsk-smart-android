@@ -250,5 +250,8 @@ for %%L in (%LANLIST%) do set "QRLIST=!QRLIST! -Lan %%L"
 for %%L in (%TSLIST%) do set "QRLIST=!QRLIST! -Ts %%L"
 if not exist "%~dp0show-qr.ps1" exit /b 0
 if "!QRLIST!"=="" exit /b 0
-start "" /d "%~dp0" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0show-qr.ps1" -Secret "%SECRET%" -Port %PORT% !QRLIST!
+REM the key goes in through the environment, not the command line (process lists show that)
+set "DSK_QR_SECRET=%SECRET%"
+start "" /d "%~dp0" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0show-qr.ps1" -Port %PORT% !QRLIST!
+set "DSK_QR_SECRET="
 exit /b 0

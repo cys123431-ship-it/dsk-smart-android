@@ -3,6 +3,8 @@ package com.dskapp.ui.settings
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,14 +48,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.BinaryBitmap
-import com.google.zxing.DecodeHintType
-import com.google.zxing.MultiFormatReader
-import com.google.zxing.PlanarYUVLuminanceSource
-import com.google.zxing.common.HybridBinarizer
+import com.dskapp.data.log.ErrorLog
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Camera QR reader for the PC pairing code, shown full screen.
@@ -283,15 +281,24 @@ private fun bindCamera(
     val preview = Preview.Builder().build().also {
         it.surfaceProvider = previewView.surfaceProvider
     }
+    // One result per bind: a second frame that was already being read must not report again.
+    val delivered = AtomicBoolean(false)
+    val mainHandler = Handler(Looper.getMainLooper())
     analysis.setAnalyzer(executor) { image: ImageProxy ->
+        // Anything thrown here would escape on the camera thread and take the app down, so a
+        // bad frame is only logged and skipped.
         val text = try {
             decoder.decode(image)
+        } catch (e: Exception) {
+            ErrorLog.record("qr", "frame decode failed: ${e.message ?: e::class.java.simpleName}")
+            null
         } finally {
             image.close()
         }
-        if (text != null) {
+        if (text != null && delivered.compareAndSet(false, true)) {
             analysis.clearAnalyzer()
-            onDecoded(text)
+            // The view model and Compose state are updated from the main thread.
+            mainHandler.post { onDecoded(text) }
         }
     }
 
@@ -306,48 +313,24 @@ private fun bindCamera(
 /**
  * Turns one camera frame into QR text, or null when the frame holds no readable code.
  *
- * Rear cameras usually deliver frames rotated by 90 degrees; that is passed to zxing as a
- * rotated source instead of rotating pixels. Only QR codes are attempted, since asking for
- * every barcode format would triple the work per frame.
+ * Only the Y (luma) plane is used, read with its real row stride. The frame is not rotated:
+ * zxing finds a QR code at any orientation, and [QrFrameDecoder] explains why rotating the
+ * source would crash.
  */
 private class QrDecoder {
 
-    private val reader = MultiFormatReader().apply {
-        setHints(
-            mapOf(
-                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-                DecodeHintType.TRY_HARDER to true
-            )
-        )
-    }
+    private val frames = QrFrameDecoder()
 
     fun decode(image: ImageProxy): String? {
         val plane = image.planes.firstOrNull() ?: return null
         val buffer = plane.buffer
+        buffer.rewind()
         val data = ByteArray(buffer.remaining())
         buffer.get(data)
-        val source = PlanarYUVLuminanceSource(
-            data,
-            image.width,
-            image.height,
-            0,
-            0,
-            image.width,
-            image.height,
-            false
-        )
-        val upright = when (image.imageInfo.rotationDegrees) {
-            90 -> source.rotateCounterClockwise()
-            180 -> source.rotateCounterClockwise().rotateCounterClockwise()
-            270 -> source.rotateCounterClockwise().rotateCounterClockwise().rotateCounterClockwise()
-            else -> source
-        }
-        return runCatching {
-            reader.decodeWithState(BinaryBitmap(HybridBinarizer(upright))).text
-        }.getOrNull().also { reader.reset() }
+        return frames.decode(data, image.width, image.height, plane.rowStride)
     }
 
     fun close() {
-        reader.reset()
+        frames.close()
     }
 }

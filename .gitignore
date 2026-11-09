@@ -15,7 +15,8 @@ app/build/
 *.keystore
 .kotlin/
 keystore.properties
-__pycache__/ 
-"build_v*.log"  
-"build_v*.done"  
-"_build.bat"  
+__pycache__/
+# local build helpers (Windows): never commit
+build_v*.log
+build_v*.done
+_build.bat

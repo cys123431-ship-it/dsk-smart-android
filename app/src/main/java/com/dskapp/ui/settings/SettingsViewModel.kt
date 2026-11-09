@@ -485,7 +485,9 @@ class SettingsViewModel(
             _uiState.update {
                 it.copy(
                     isRemoteTesting = true,
-                    isRemoteEditing = false,
+                    // Hold the scanned address in the fields while connecting, so a settings
+                    // refresh cannot swap the old saved address back in next to the new key.
+                    isRemoteEditing = true,
                     remoteUrl = url,
                     remoteSecret = pair.secret,
                     qrMessage = null,
@@ -494,6 +496,7 @@ class SettingsViewModel(
             }
             val client = AcpClient(aiClient.testHttpClient(), url, pair.secret)
             val startedAt = System.currentTimeMillis()
+            var paired = false
             val status = try {
                 client.connect()
                 val init = client.initialize()
@@ -508,6 +511,7 @@ class SettingsViewModel(
                 // address on the next save, so the scan saves the connection itself.
                 repository.saveRemote(url, pair.secret, _uiState.value.remoteCwd.trim(), _uiState.value.remoteMode)
                 repository.rememberPc(pc)
+                paired = true
                 buildString {
                     append("PC 를 찾았습니다 (").append(elapsed).append("ms)")
                     if (init.agentName.isNotBlank()) append(" · ").append(init.agentName)
@@ -520,11 +524,14 @@ class SettingsViewModel(
             } finally {
                 runCatching { client.close() }
             }
+            // Success: the scan saved address + key itself, so the fields show the saved state.
+            // Failure: nothing was saved; the scanned address and key stay together in the
+            // fields, so pressing 저장 stores that pair instead of the old address + new key.
             _uiState.update {
                 it.copy(
                     isRemoteTesting = false,
-                    isRemoteEditing = status.startsWith("PC 를 찾았습니다"),
-                    remoteSecret = if (status.startsWith("PC 를 찾았습니다")) "" else it.remoteSecret,
+                    isRemoteEditing = !paired,
+                    remoteSecret = if (paired) "" else it.remoteSecret,
                     hasRemoteSecret = repository.remoteSecret().isNotBlank(),
                     knownPcs = repository.knownPcs(),
                     remoteStatus = status
@@ -723,7 +730,9 @@ class SettingsViewModel(
             }.getOrDefault(false)
             runCatching { client.close() }
             if (ok) {
-                val isTs = url.contains("100.") || address.contains("100.")
+                // Only the host decides: "192.168.100.5" contains "100." but is a home address.
+                val host = url.substringAfter("://").substringBefore('/').substringBefore(':')
+                val isTs = NetworkRoute.isTailscale(host) || host.endsWith(".ts.net", ignoreCase = true)
                 return KnownPc(
                     address = address.trim(),
                     name = if (isTs) "Tailscale" else "Wi-Fi",
