@@ -21,8 +21,8 @@ android {
         applicationId = "com.dskapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 20
-        versionName = "1.10.2"
+        versionCode = 21
+        versionName = "1.11.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -57,6 +57,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.VERSION_NAME is what the app reports to the PC as its client version.
+        buildConfig = true
     }
 
     packaging {

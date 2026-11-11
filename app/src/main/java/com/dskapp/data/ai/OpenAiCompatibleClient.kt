@@ -62,35 +62,59 @@ class OpenAiCompatibleClient(
         )
 
         try {
-            client.newCall(request).execute().use { response ->
-                val payload = response.body?.string().orEmpty()
-                if (response.isSuccessful) return@withContext parseCompleteResponse(payload)
+            val first = fetch(request)
+            if (first.ok) return@withContext parseCompleteResponse(first.body)
 
-                // Reasoning models (DeepSeek / Kimi / GLM) can spend the whole max_tokens
-                // budget on hidden thinking and fail with "no room for content". Asking the
-                // provider to skip thinking makes a retry succeed. One retry only.
-                if (isThinkingBudgetFailure(response.code, payload)) {
-                    val retry = chatRequest(
-                        config,
-                        buildRequest(
-                            config, model, systemPrompt, messages, maxTokens,
-                            stream = false, includeUsage = false, disableThinking = true
-                        ),
-                        accept = "application/json"
-                    )
-                    client.newCall(retry).execute().use { second ->
-                        val secondPayload = second.body?.string().orEmpty()
-                        if (second.isSuccessful) return@withContext parseCompleteResponse(secondPayload)
-                    }
-                }
-                AiResult.Failure(parseError(response.code, payload))
+            // Reasoning models (DeepSeek / Kimi / GLM) can spend the whole max_tokens
+            // budget on hidden thinking and fail with "no room for content". Asking the
+            // provider to skip thinking makes a retry succeed. One retry only.
+            if (isThinkingBudgetFailure(first.code, first.body)) {
+                val retry = chatRequest(
+                    config,
+                    buildRequest(
+                        config, model, systemPrompt, messages, maxTokens,
+                        stream = false, includeUsage = false, disableThinking = true
+                    ),
+                    accept = "application/json"
+                )
+                val second = fetch(retry)
+                if (second.ok) return@withContext parseCompleteResponse(second.body)
             }
+            AiResult.Failure(parseError(first.code, first.body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
             AiResult.Failure(AiError.Network(e.message ?: "연결 실패"))
         } catch (e: Exception) {
             AiResult.Failure(AiError.Unexpected(e.message ?: e::class.simpleName ?: "알 수 없는 오류"))
+        }
+    }
+
+    private class HttpReply(val code: Int, val ok: Boolean, val body: String)
+
+    /**
+     * Runs one non-streaming request so that cancelling the coroutine really aborts it.
+     *
+     * execute() blocks on the socket, which coroutine cancellation cannot interrupt: a
+     * cancelled caller used to sit there until the model finished (up to the 5-minute read
+     * timeout). That is what made the phone agent's 중지 button look dead while a step was
+     * waiting for the AI. The guard coroutine wakes on cancellation and cancels the call.
+     */
+    private suspend fun fetch(request: Request): HttpReply = coroutineScope {
+        val call = client.newCall(request)
+        val guard = launch {
+            try {
+                awaitCancellation()
+            } finally {
+                call.cancel()
+            }
+        }
+        try {
+            call.execute().use { response ->
+                HttpReply(response.code, response.isSuccessful, response.body?.string().orEmpty())
+            }
+        } finally {
+            guard.cancel()
         }
     }
 
@@ -163,7 +187,8 @@ class OpenAiCompatibleClient(
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
         onUsage: (TokenUsage) -> Unit,
-        onReasoning: (String) -> Unit
+        onReasoning: (String) -> Unit,
+        onTruncated: () -> Unit
     ): Flow<Unit> = flow<Unit> {
         val config = configProvider()
         if (!config.isComplete) {
@@ -199,12 +224,16 @@ class OpenAiCompatibleClient(
                 }
             }
             try {
-                val retry = readStream(current.get(), includeUsage, onText, onError, reportUsage, onReasoning)
+                val retry = readStream(
+                    current.get(), includeUsage, onText, onError, reportUsage, onReasoning, onTruncated
+                )
                 if (retry) {
                     streamUsageUnsupported = true
                     current.set(newCall(includeUsage = false))
                     currentCoroutineContext().ensureActive()
-                    readStream(current.get(), includeUsage = false, onText, onError, reportUsage, onReasoning)
+                    readStream(
+                        current.get(), includeUsage = false, onText, onError, reportUsage, onReasoning, onTruncated
+                    )
                 }
             } finally {
                 guard.cancel()
@@ -222,7 +251,8 @@ class OpenAiCompatibleClient(
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
         onUsage: (TokenUsage) -> Unit,
-        onReasoning: (String) -> Unit
+        onReasoning: (String) -> Unit,
+        onTruncated: () -> Unit
     ): Boolean {
         try {
             call.execute().use { okResponse ->
@@ -254,13 +284,16 @@ class OpenAiCompatibleClient(
                         ChatJson.decodeFromString(ChatStreamChunk.serializer(), payload)
                     }.getOrNull() ?: continue
 
-                    val delta = chunk.choices.firstOrNull()?.delta
+                    val choice = chunk.choices.firstOrNull()
+                    val delta = choice?.delta
                     (delta?.reasoningContent ?: delta?.thinking ?: delta?.reasoning)?.let { thought ->
                         if (thought.isNotEmpty()) onReasoning(thought)
                     }
                     delta?.content?.let { text ->
                         if (text.isNotEmpty()) onText(text)
                     }
+                    // The token budget ran out mid-answer: the text simply stops, so say so.
+                    if (choice?.finishReason.equals("length", ignoreCase = true)) onTruncated()
                     // With include_usage the last chunk has empty choices and the totals.
                     chunk.usage?.let { onUsage(it.toTokenUsage()) }
                 }

@@ -66,15 +66,12 @@ class ChatRepository(private val dao: ChatDao) {
         fromMessageId: Long,
         keepPaths: Set<String> = emptySet()
     ) {
-        val removed = dao.getMessagesFrom(conversationId, fromMessageId)
-        dao.deleteMessagesFrom(conversationId, fromMessageId)
+        // Rows first, atomically; files only after the database agrees they are gone.
+        val removed = dao.truncateThread(conversationId, fromMessageId)
         AttachmentStore.deleteAll(
             removed.flatMap { AttachmentCodec.decode(it.attachmentsJson) }
                 .filterNot { it.localPath in keepPaths }
         )
-        val conversation = dao.getConversation(conversationId)
-        val upTo = conversation?.summaryUpToId
-        if (upTo != null && upTo >= fromMessageId) dao.setSummary(conversationId, null, null)
     }
 
     suspend fun renameConversation(id: Long, title: String) {
@@ -129,11 +126,10 @@ class ChatRepository(private val dao: ChatDao) {
 
     /** Inserts a restored thread with fresh ids; returns the new conversation id. */
     suspend fun insertRestored(conversation: ConversationEntity, messages: List<MessageEntity>): Long {
-        val newId = dao.insertConversation(
-            conversation.copy(id = 0L, summary = null, summaryUpToId = null)
+        return dao.insertThread(
+            conversation.copy(id = 0L, summary = null, summaryUpToId = null),
+            messages
         )
-        dao.insertMessages(messages.map { it.copy(id = 0L, conversationId = newId) })
-        return newId
     }
 
     companion object Factory {

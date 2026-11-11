@@ -26,7 +26,9 @@ interface AiClient {
      * Streaming call. Emits incremental text deltas through [onText] and reports problems
      * through [onError] so callers can keep partial text on screen. [onUsage] fires once at
      * the end when the server reports token counts. [onReasoning] receives the model's
-     * thinking when the server streams it separately from the answer.
+     * thinking when the server streams it separately from the answer. [onTruncated] fires
+     * when the server stopped because the answer hit the token limit (finish_reason
+     * "length"), so the caller can say the text was cut off instead of looking finished.
      */
     fun stream(
         systemPrompt: String,
@@ -36,7 +38,8 @@ interface AiClient {
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
         onUsage: (TokenUsage) -> Unit = {},
-        onReasoning: (String) -> Unit = {}
+        onReasoning: (String) -> Unit = {},
+        onTruncated: () -> Unit = {}
     ): Flow<Unit>
 
     /** Lists model IDs from GET /models; empty when the server does not support it. */

@@ -21,7 +21,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -79,8 +78,10 @@ fun RemoteChatScreen(
     var draft by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
 
+    // open() ignores a repeat for the same target, so coming back to this screen (for example
+    // from the session list) keeps the conversation instead of starting a new one.
     LaunchedEffect(loadSessionId) {
-        if (loadSessionId == null) viewModel.startNew() else viewModel.requestLoad(loadSessionId, title)
+        viewModel.open(loadSessionId, title)
     }
     LaunchedEffect(state.error) {
         val error = state.error ?: return@LaunchedEffect
@@ -89,13 +90,16 @@ fun RemoteChatScreen(
     }
     // Follow the stream: item count alone changes even when a chunk appends to the last bubble.
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text?.length, state.tools.size) {
-        val total = state.messages.size + state.tools.size
+        // All tool cards share one list item, shown only while a turn runs.
+        val toolsItem = if (state.isTurnRunning && state.tools.isNotEmpty()) 1 else 0
+        val total = state.messages.size + toolsItem
         if (total > 0) listState.animateScrollToItem(total - 1)
     }
 
     state.pendingPermission?.let { request ->
         PermissionDialog(
             request = request,
+            waiting = state.permissionQueue.size,
             onAllow = viewModel::allowPermission,
             onDeny = viewModel::denyPermission
         )
@@ -164,6 +168,26 @@ fun RemoteChatScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 12.dp)
                         )
+                    }
+                }
+            }
+
+            if (state.connection == RemoteUiState.Connection.FAILED) {
+                OutlinedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = state.failure.ifBlank { "PC goose와 연결되어 있지 않습니다." },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = viewModel::retry) { Text("다시 연결") }
                     }
                 }
             }
@@ -291,7 +315,7 @@ private fun ToolCard(tool: AcpToolCall) {
             }
             Column(modifier = Modifier.padding(start = 10.dp)) {
                 Text(
-                    text = tool.title,
+                    text = tool.displayTitle,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -318,6 +342,7 @@ private fun ToolCard(tool: AcpToolCall) {
 @Composable
 private fun PermissionDialog(
     request: AcpPermissionRequest,
+    waiting: Int,
     onAllow: () -> Unit,
     onDeny: () -> Unit
 ) {
@@ -336,14 +361,25 @@ private fun PermissionDialog(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    request.options.take(3).forEach { (_, label) ->
-                        AssistChip(onClick = {}, label = { Text(label) })
-                    }
+                Text(
+                    text = if (request.allowOnceId != null) {
+                        "승인은 이번 한 번만 적용됩니다. 같은 도구를 다시 쓰려면 또 물어봅니다."
+                    } else {
+                        "goose가 '이번만 허용'을 제공하지 않았습니다. 승인을 눌러도 거절로 처리됩니다."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (waiting > 1) {
+                    Text(
+                        text = "이 요청 뒤에 ${waiting - 1}개가 더 기다리고 있습니다.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         },
-        confirmButton = { Button(onClick = onAllow) { Text("승인") } },
+        confirmButton = { Button(onClick = onAllow) { Text("이번만 승인") } },
         dismissButton = { OutlinedButton(onClick = onDeny) { Text("거절") } }
     )
 }

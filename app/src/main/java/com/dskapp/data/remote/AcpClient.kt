@@ -1,5 +1,6 @@
 package com.dskapp.data.remote
 
+import com.dskapp.BuildConfig
 import com.dskapp.data.log.ErrorLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
@@ -52,7 +53,9 @@ class AcpClient(
 
     private val nextId = AtomicLong(1)
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<JsonObject>>()
-    private val _events = Channel<AcpEvent>(Channel.BUFFERED)
+    // Unlimited on purpose: a session/load replay pushes hundreds of updates in a burst, and a
+    // bounded channel silently dropped the ones the UI had not consumed yet (holes in history).
+    private val _events = Channel<AcpEvent>(Channel.UNLIMITED)
 
     /** Stream of notifications (updates, permission requests). One consumer only. */
     val events: Flow<AcpEvent> = _events.receiveAsFlow()
@@ -66,16 +69,37 @@ class AcpClient(
     private fun socketOrThrow(): WebSocket =
         socket ?: throw AcpException(closedReason ?: "PC goose에 연결되어 있지 않습니다.")
 
-    /** Opens the socket. Returns once the HTTP 101 handshake succeeded or throws. */
-    suspend fun connect(): Unit = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+    /**
+     * Opens the socket. Returns once the HTTP 101 handshake succeeded or throws.
+     *
+     * The handshake gets its own deadline: the shared HTTP client has no read timeout for
+     * this socket (turns idle for minutes), so a host that accepts the TCP connection and
+     * then says nothing would otherwise leave "연결하는 중…" on screen for ten minutes.
+     */
+    suspend fun connect() {
+        try {
+            kotlinx.coroutines.withTimeout(CONNECT_TIMEOUT_MS) { openSocket() }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            val reason = "PC가 ${CONNECT_TIMEOUT_MS / 1000}초 안에 응답하지 않습니다. " +
+                "주소가 맞는지, PC와 DSK-Remote가 켜져 있는지 확인해 주세요."
+            closedReason = reason
+            socket = null
+            throw AcpException(reason)
+        }
+    }
+
+    private suspend fun openSocket(): Unit = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
         val request = Request.Builder()
             .url(AcpJson.normalizeServerUrl(serverUrl))
             .header("X-Secret-Key", secretKey)
             .header("Acp-Connection-Id", UUID.randomUUID().toString())
             .build()
         val opened = java.util.concurrent.atomic.AtomicBoolean(false)
+        // True once the handshake succeeded: a later close/failure is a dropped connection.
+        val established = java.util.concurrent.atomic.AtomicBoolean(false)
         val ws = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                established.set(true)
                 if (opened.compareAndSet(false, true) && cont.isActive) cont.resumeWith(Result.success(Unit))
             }
 
@@ -86,7 +110,12 @@ class AcpClient(
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                failAll("PC goose와의 연결이 닫혔습니다 (code $code).")
+                val closed = "PC goose와의 연결이 닫혔습니다 (code $code)."
+                if (closedReason == null) closedReason = closed
+                // Event first, then the pending calls: the UI learns "connection lost" before
+                // a waiting prompt fails, so it shows one explanation instead of two.
+                if (established.get()) _events.trySend(AcpEvent.Disconnected(closed))
+                failAll(closed)
                 if (opened.compareAndSet(false, true) && cont.isActive) {
                     cont.resumeWith(Result.failure(AcpException("서버가 연결을 닫았습니다 (code $code).")))
                 }
@@ -97,11 +126,19 @@ class AcpClient(
                 val reason = when {
                     code == 401 || code == 403 ->
                         "Secret Key가 올바르지 않습니다 (HTTP $code)."
+                    // The PC's front door (proxy.ps1) answers 502 itself when goose is not
+                    // running behind it: "PC reachable, goose down", not a wrong address.
+                    code == 502 ->
+                        "PC에는 닿았지만 goose가 꺼져 있습니다 (HTTP 502). " +
+                            "PC에서 DSK-Remote.bat을 다시 실행해 주세요."
                     code != null -> "PC goose가 연결을 거부했습니다 (HTTP $code)."
                     else -> "PC goose에 연결할 수 없습니다: ${t.message ?: t::class.java.simpleName}"
                 }
                 closedReason = reason
-                ErrorLog.record("remote", "acp connect failed: ${t.message ?: "no detail"} code=$code")
+                ErrorLog.record("remote", "acp socket failed: ${t.message ?: "no detail"} code=$code")
+                // After a successful handshake this is a dropped connection (Wi-Fi <-> LTE, PC
+                // asleep): tell the UI, which otherwise keeps showing a live session.
+                if (established.get()) _events.trySend(AcpEvent.Disconnected(reason))
                 failAll(reason)
                 if (opened.compareAndSet(false, true) && cont.isActive) {
                     cont.resumeWith(Result.failure(AcpException(reason, t)))
@@ -136,7 +173,7 @@ class AcpClient(
                 }
                 putJsonObject("clientInfo") {
                     put("name", "DSK Smart")
-                    put("version", "1.8.0")
+                    put("version", BuildConfig.VERSION_NAME)
                 }
             }
         )
@@ -183,7 +220,44 @@ class AcpClient(
             // Replays a long conversation; give it more headroom than a normal call.
             timeoutMs = 120_000
         )
-        return AcpSession.from(result)
+        // goose's session/load result carries no sessionId (session/new's does): the id that
+        // was asked for is the id. Requiring one from the server made every reopen fail.
+        val session = AcpSession.from(result, fallbackSessionId = sessionId)
+        // Sent after the response, so it queues behind every replayed update: the UI can
+        // close the last replayed bubble exactly when the history is complete.
+        _events.trySend(AcpEvent.HistoryLoaded)
+        return session
+    }
+
+    /**
+     * Sets one of the session's config options (goose offers "provider", "model", "mode",
+     * "thinking_effort") for this session only; the PC's own goose settings are untouched.
+     */
+    suspend fun setConfigOption(sessionId: String, configId: String, value: String) {
+        call(
+            "session/set_config_option",
+            buildJsonObject {
+                put("sessionId", sessionId)
+                put("configId", configId)
+                put("value", value)
+            },
+            timeoutMs = 20_000
+        )
+    }
+
+    /**
+     * Switches the permission mode ("auto", "approve", "smart_approve", "chat") of a session.
+     * goose ignores a mode passed to session/new, so this call is the only way to apply it.
+     */
+    suspend fun setMode(sessionId: String, modeId: String) {
+        call(
+            "session/set_mode",
+            buildJsonObject {
+                put("sessionId", sessionId)
+                put("modeId", modeId)
+            },
+            timeoutMs = 20_000
+        )
     }
 
     suspend fun listSessions(cwd: String?): List<AcpSessionSummary> {
@@ -246,21 +320,23 @@ class AcpClient(
         })
     }
 
-    /** Answers a `session/request_permission` request. */
-    suspend fun respondPermission(requestId: String, optionId: String?, cancelled: Boolean = false) {
-        val outcome = if (cancelled) {
-            buildJsonObject { put("outcome", "cancelled") }
+    /**
+     * Answers a `session/request_permission` request. [optionId] is one of the option ids the
+     * request offered; null reports the request as cancelled. The id is echoed exactly as the
+     * server sent it (goose uses a string uuid) and the result has the nested `outcome`
+     * object goose expects - the flat shape used before was read as a refusal.
+     */
+    suspend fun respondPermission(requestId: JsonPrimitive, optionId: String?) {
+        val result = if (optionId == null) {
+            AcpPermissionOutcome.cancelled()
         } else {
-            buildJsonObject {
-                put("outcome", "selected")
-                put("optionId", optionId ?: "allow")
-            }
+            AcpPermissionOutcome.selected(optionId)
         }
         send(buildJsonObject {
             put("jsonrpc", "2.0")
             // The helper answers a *request*, so it uses `result`, not `method`.
             put("id", requestId)
-            put("result", outcome)
+            put("result", result)
         })
     }
 
@@ -280,8 +356,13 @@ class AcpClient(
             put("method", method)
             if (params != null) put("params", params)
         }
-        socketOrThrow()
-        send(payload)
+        try {
+            send(payload)
+        } catch (e: Exception) {
+            // Nothing will ever answer a request that was not sent.
+            pending.remove(id)
+            throw e
+        }
         val result = try {
             kotlinx.coroutines.withTimeout(timeoutMs) { deferred.await() }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
@@ -307,7 +388,7 @@ class AcpClient(
         val idPrimitive = message["id"] as? JsonPrimitive
         if (idPrimitive != null && message.containsKey("method")) {
             // Server -> client request (permission prompt, or fs/terminal if advertised).
-            handleServerRequest(idPrimitive.content, message)
+            handleServerRequest(idPrimitive, message)
             return
         }
         if (idPrimitive != null) {
@@ -330,16 +411,13 @@ class AcpClient(
                 val update = AcpUpdate.parse(message["params"]?.jsonObjectOrNull())
                 if (update != null) _events.trySend(AcpEvent.Update(update))
             }
-            "session/request_permission" -> {
-                val requestId = (message["id"] as? JsonPrimitive)?.content
-                val request = AcpPermissionRequest.parse(requestId.orEmpty(), message["params"]?.jsonObjectOrNull())
-                if (request != null) _events.trySend(AcpEvent.PermissionRequest(request))
-            }
+            // A permission "request" without an id cannot be answered; nothing to show.
+            "session/request_permission" -> Unit
             else -> _events.trySend(AcpEvent.Other(method, message["params"]?.jsonObjectOrNull()))
         }
     }
 
-    private fun handleServerRequest(id: String, message: JsonObject) {
+    private fun handleServerRequest(id: JsonPrimitive, message: JsonObject) {
         when (message.string("method")) {
             "session/request_permission" -> {
                 val request = AcpPermissionRequest.parse(id, message["params"]?.jsonObjectOrNull())
@@ -373,6 +451,9 @@ class AcpClient(
 
     companion object {
         const val DEFAULT_CWD = "~"
+
+        /** Deadline for the WebSocket handshake; ACP calls have their own timeouts. */
+        const val CONNECT_TIMEOUT_MS = 15_000L
     }
 }
 
@@ -381,6 +462,12 @@ sealed interface AcpEvent {
     data class Update(val update: AcpUpdate) : AcpEvent
     data class PermissionRequest(val request: AcpPermissionRequest) : AcpEvent
     data class Other(val method: String, val params: JsonObject?) : AcpEvent
+
+    /** The socket closed or failed after it had been open. No further events follow. */
+    data class Disconnected(val reason: String) : AcpEvent
+
+    /** `session/load` finished: every replayed update before this one is history. */
+    data object HistoryLoaded : AcpEvent
 }
 
 internal fun JsonElement.jsonObjectOrNull(): JsonObject? =

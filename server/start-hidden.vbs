@@ -13,7 +13,8 @@
 '   exactly why the phone could never connect when goose was exposed directly.
 '
 ' Start by double-clicking, or let the startup shortcut run it.
-' Already running? It does nothing.
+' Already running? It does nothing. Half running (goose gone, door still open - this has
+' happened) starts only the missing half, and the door itself restarts goose later.
 
 Option Explicit
 
@@ -67,7 +68,10 @@ End If
 goosePort = CStr(CLng(port) + 1)
 
 ' ---- already running? ----------------------------------------------
-If PortBusy(port) Then
+Dim gooseUp, proxyUp
+gooseUp = PortBusy(goosePort)
+proxyUp = PortBusy(port)
+If gooseUp And proxyUp Then
     ' The front door is already up; a second copy would only fail to bind.
     WScript.Quit 0
 End If
@@ -78,7 +82,9 @@ shell.Environment("Process")("GOOSE_WORKING_DIR")        = workDir
 
 ' The file is recreated on each start so it only describes the current run.
 On Error Resume Next
-If fso.FileExists(logPath) Then fso.DeleteFile logPath, True
+If Not gooseUp And Not proxyUp Then
+    If fso.FileExists(logPath) Then fso.DeleteFile logPath, True
+End If
 On Error Goto 0
 
 Dim logFile
@@ -86,16 +92,20 @@ Set logFile = fso.OpenTextFile(logPath, 8, True)
 logFile.WriteLine Now & "  DSK Remote starting"
 
 ' goose: loopback only, never 0.0.0.0 - that is the whole reason for the proxy.
-Dim gooseCmd
-gooseCmd = """" & gooseExe & """ serve --host 127.0.0.1 --port " & goosePort & " --platform desktop"
+Dim gooseArgs, gooseCmd
+gooseArgs = "serve --host 127.0.0.1 --port " & goosePort & " --platform desktop"
+gooseCmd = """" & gooseExe & """ " & gooseArgs
 shell.CurrentDirectory = workDir
-shell.Run gooseCmd, 0, False
-logFile.WriteLine Now & "  goose on 127.0.0.1:" & goosePort
+If Not gooseUp Then
+    shell.Run gooseCmd, 0, False
+    logFile.WriteLine Now & "  goose on 127.0.0.1:" & goosePort
+End If
 
 ' Give goose a moment to bind before the proxy opens its front door.
 Dim waited, up
-up = False
+up = gooseUp
 For waited = 1 To 40
+    If up Then Exit For
     WScript.Sleep 250
     If PortBusy(goosePort) Then
         up = True
@@ -106,10 +116,14 @@ If Not up Then logFile.WriteLine Now & "  WARNING goose did not open 127.0.0.1:"
 
 Dim proxyCmd, ps
 ps = shell.ExpandEnvironmentStrings("%SystemRoot%") & "\System32\WindowsPowerShell\v1.0\powershell.exe"
+' -GooseExe / -GooseArgs let the door start goose again by itself when goose is gone.
 proxyCmd = """" & ps & """ -NoProfile -ExecutionPolicy Bypass -File """ & _
-           fso.BuildPath(here, "proxy.ps1") & """ -Port " & port & " -LogPath """ & logPath & """"
-shell.Run proxyCmd, 0, False
-logFile.WriteLine Now & "  proxy on 0.0.0.0:" & port
+           fso.BuildPath(here, "proxy.ps1") & """ -Port " & port & " -LogPath """ & logPath & """" & _
+           " -GooseExe """ & gooseExe & """ -GooseArgs """ & gooseArgs & """"
+If Not proxyUp Then
+    shell.Run proxyCmd, 0, False
+    logFile.WriteLine Now & "  proxy on 0.0.0.0:" & port
+End If
 logFile.Close
 
 WScript.Quit 0
@@ -122,7 +136,8 @@ Function PortBusy(p)
     Set exec = shell.Exec("cmd /c netstat -ano -p TCP | findstr LISTENING | findstr :" & p)
     If Err.Number = 0 Then
         out = exec.StdOut.ReadAll
-        If InStr(out, ":" & p) > 0 Then PortBusy = True
+        ' The trailing space keeps ":3284" from matching ":32840".
+        If InStr(out, ":" & p & " ") > 0 Then PortBusy = True
     End If
     Err.Clear
     On Error Goto 0

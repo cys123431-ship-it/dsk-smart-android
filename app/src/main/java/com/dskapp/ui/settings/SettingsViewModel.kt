@@ -642,6 +642,7 @@ class SettingsViewModel(
                 if (state.remoteUrl.isNotBlank()) add(AcpJson.normalizeServerUrl(state.remoteUrl))
             }.distinct()
 
+            lastHandshakeError = null
             var found: KnownPc? = tryCandidates(candidates, secret)
 
             // Tailscale before Wi-Fi: the PC's tailnet address never changes, so finding it
@@ -672,37 +673,48 @@ class SettingsViewModel(
             if (found == null && snapshot.hasTailscale) {
                 // A tailnet has no subnet to walk, so this probes tens of thousands of
                 // addresses and takes a minute and a half. Say so rather than looking frozen.
-                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중… (1분 30초 정도 걸릴 수 있습니다)") }
+                _uiState.update { it.copy(remoteStatus = "Tailscale에서 PC를 찾는 중… (최대 3분 정도 걸릴 수 있습니다)") }
                 val hosts = PcDiscovery.scanTailnet(snapshot.tailscaleIp, PcDiscovery.DEFAULT_PORT)
                 _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
-                found = tryCandidates(hosts.map { it.url }, secret)
+                found = tryCandidates(hosts.map { it.url }, secret, portAnswered = true)
             }
 
             if (found == null && snapshot.isOnLan) {
                 _uiState.update { it.copy(remoteStatus = "Wi-Fi에서 PC를 찾는 중… (${snapshot.lanSubnet}.0)") }
                 val hosts = PcDiscovery.scanSubnet(snapshot.lanSubnet, PcDiscovery.DEFAULT_PORT, snapshot.localIp)
                 _uiState.update { it.copy(discoveredPcs = hosts.map { it.url }) }
-                found = tryCandidates(hosts.map { it.url }, secret)
+                found = tryCandidates(hosts.map { it.url }, secret, portAnswered = true)
             }
 
             if (found != null) {
+                // Store the key that just worked together with the address. Remembering only
+                // the address left a key typed for this search unsaved, and the chat then
+                // used the old (or no) key while this screen said the key was set.
+                repository.saveRemote(found.address, secret, state.remoteCwd.trim(), state.remoteMode)
                 repository.rememberPc(found)
                 _uiState.update {
                     it.copy(
                         isDiscovering = false,
                         isRemoteEditing = false,
                         remoteUrl = found.address,
+                        remoteSecret = "",
                         hasRemoteSecret = true,
                         knownPcs = repository.knownPcs(),
                         remoteStatus = "PC를 찾았습니다 · ${found.address} (${if (found.isTailscale) "Tailscale" else "Wi-Fi"})"
                     )
                 }
             } else {
+                val handshakeError = lastHandshakeError
                 _uiState.update {
                     it.copy(
                         isDiscovering = false,
                         knownPcs = repository.knownPcs(),
-                        remoteStatus = if (snapshot.hasTailscale) {
+                        remoteStatus = if (handshakeError != null) {
+                            // Something answered on the port but refused the handshake: that is
+                            // a wrong key or a half-started server, not "no PC found". Hiding
+                            // this reason is what kept a real cause invisible for many versions.
+                            "PC로 보이는 주소는 찾았지만 연결하지 못했습니다: $handshakeError"
+                        } else if (snapshot.hasTailscale) {
                             "PC를 찾지 못했습니다. PC에서 DSK-Remote.bat이 실행 중인지, " +
                                 "폰과 PC가 같은 Tailscale 계정인지 확인해 주세요."
                         } else {
@@ -714,20 +726,35 @@ class SettingsViewModel(
         }
     }
 
+    /** Why a host that answered on the port still failed the ACP handshake (last one seen). */
+    private var lastHandshakeError: String? = null
+
     /**
      * Tries each address until the ACP handshake succeeds. Bad addresses are skipped
      * quietly; only success produces a [KnownPc].
      */
-    private suspend fun tryCandidates(addresses: List<String>, secret: String): KnownPc? {
+    private suspend fun tryCandidates(
+        addresses: List<String>,
+        secret: String,
+        portAnswered: Boolean = false
+    ): KnownPc? {
         for (address in addresses) {
             val url = AcpJson.normalizeServerUrl(address)
             if (url.isBlank()) continue
             val client = AcpClient(aiClient.testHttpClient(), url, secret)
-            val ok = runCatching {
+            val ok = try {
                 client.connect()
                 client.initialize()
                 true
-            }.getOrDefault(false)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                runCatching { client.close() }
+                throw e
+            } catch (e: Exception) {
+                // Only worth telling the user when the port was open: a remembered address
+                // that is simply offline is the normal case and would drown the real reason.
+                if (portAnswered) lastHandshakeError = e.message ?: e::class.java.simpleName
+                false
+            }
             runCatching { client.close() }
             if (ok) {
                 // Only the host decides: "192.168.100.5" contains "100." but is a home address.

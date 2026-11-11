@@ -280,6 +280,12 @@ class ChatViewModel(
             _uiState.update { it.copy(banner = "설정 > 폰 조작에서 접근성 권한을 먼저 켜 주세요.") }
             return
         }
+        // Checked before the goal is stored: a refused start used to leave the "📱 goal"
+        // message in the thread, and sending again added it a second time.
+        if (AgentBridge.running.value) {
+            _uiState.update { it.copy(banner = "이미 폰 조작이 진행 중입니다.") }
+            return
+        }
         _uiState.update { it.copy(input = "", agentMode = false) }
         viewModelScope.launch {
             if (!persistUserTurn("📱 $goal", emptyList())) return@launch
@@ -396,6 +402,8 @@ class ChatViewModel(
         val builder = StringBuilder()
         val thoughts = StringBuilder()
         var failed = false
+        // The last round stopped at the token limit: the answer is cut off, not finished.
+        var truncated = false
         var usage: TokenUsage? = null
         var status: String? = null
         // Search results the answer used; stored with it so follow-up questions still see them.
@@ -429,6 +437,7 @@ class ChatViewModel(
             var messages = context.messages
             var round = 0
             while (true) {
+                truncated = false
                 aiClient.stream(
                     systemPrompt = system,
                     messages = messages,
@@ -446,7 +455,8 @@ class ChatViewModel(
                         ErrorLog.record("chat", "${error::class.simpleName}: ${error.userMessage}")
                         _uiState.update { it.copy(banner = error.userMessage) }
                     },
-                    onUsage = { usage = usage?.plus(it) ?: it }
+                    onUsage = { usage = usage?.plus(it) ?: it },
+                    onTruncated = { truncated = true }
                 ).collect { }
 
                 if (failed || !searchEnabled || round >= SearchProtocol.MAX_ROUNDS) break
@@ -496,6 +506,11 @@ class ChatViewModel(
                     attachments = searchFiles
                 )
                 if (!stored) AttachmentStore.deleteAll(searchFiles)
+                if (stored && truncated && !job.isCancelled) {
+                    _uiState.update {
+                        it.copy(banner = "답변이 길이 제한에 걸려 중간에 끊겼습니다. \"이어서\"라고 보내면 계속 씁니다.")
+                    }
+                }
                 if (streamJob === job) streamJob = null
             }
         }

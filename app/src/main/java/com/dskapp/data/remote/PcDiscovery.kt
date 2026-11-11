@@ -2,7 +2,10 @@ package com.dskapp.data.remote
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -74,11 +77,7 @@ object PcDiscovery {
         if (subnet.isBlank()) return@withContext emptyList()
 
         val hosts = (1..254).map { "$subnet.$it" }
-        val found: List<String> = coroutineScope {
-            hosts.chunked(PARALLELISM).map { chunk ->
-                async { chunk.filter { host -> isOpen(host, port) } }
-            }.map { it.await() }.flatten()
-        }
+        val found: List<String> = probeAll(hosts, port)
 
         found
             .sortedWith(
@@ -100,17 +99,26 @@ object PcDiscovery {
     ): List<Found> = withContext(Dispatchers.IO) {
         val plan = tailnetPlan(ownTailscaleIp, maxHosts)
         if (plan.isEmpty()) return@withContext emptyList()
-        val hits: List<String> = coroutineScope {
-            val chunks = plan.chunked(PARALLELISM)
-            val jobs = chunks.map { chunk -> async { chunk.filter { host -> isOpen(host, port) } } }
-            val acc = ArrayList<String>()
-            for (job in jobs) {
-                acc.addAll(job.await())
-                if (acc.isNotEmpty()) break
-            }
-            acc
+        // One chunk at a time, most likely addresses first. The old code started every chunk
+        // at once and each chunk probed its hosts one after another, so nothing ran "in
+        // parallel" in the intended sense and finding the PC early did not stop the scan.
+        var hits: List<String> = emptyList()
+        for (chunk in plan.chunked(PARALLELISM)) {
+            currentCoroutineContext().ensureActive()
+            hits = probeAll(chunk, port)
+            if (hits.isNotEmpty()) break
         }
         hits.map { Found(it, port) }
+    }
+
+    /**
+     * Probes every host at the same time (up to [PROBE_THREADS] sockets in flight) and returns
+     * the ones that answered, in the order given.
+     */
+    private suspend fun probeAll(hosts: List<String>, port: Int): List<String> = coroutineScope {
+        hosts.map { host ->
+            async(probeDispatcher) { if (isOpen(host, port)) host else null }
+        }.awaitAll().filterNotNull()
     }
 
     /**
@@ -226,6 +234,14 @@ object PcDiscovery {
         }
         return out
     }
+
+    /**
+     * A socket connect blocks its thread, so the probes need threads of their own: a view of
+     * the IO dispatcher sized for the scan (such a view may grow past the IO pool's default
+     * 64). 128 keeps a /24 Wi-Fi scan under a second without flooding a phone with threads.
+     */
+    private const val PROBE_THREADS = 128
+    private val probeDispatcher = Dispatchers.IO.limitedParallelism(PROBE_THREADS)
 
     /** True when a TCP connection to host:port succeeds within the timeout. */
     private fun isOpen(host: String, port: Int): Boolean = runCatching {

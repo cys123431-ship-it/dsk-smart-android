@@ -166,7 +166,10 @@ if ($codes.Count -eq 0) {
 }
 
 $python = Find-Python
-if (-not $python -and -not (Test-Path $gen)) {
+# Either one missing means no QR can be drawn. This used to test "python missing AND
+# generator missing", so a PC without Python fell through and died on "& $null" instead of
+# reporting it; the addresses in the console still work for typing by hand.
+if (-not $python -or -not (Test-Path $gen)) {
     Write-Output "NO_PYTHON"
     exit 2
 }

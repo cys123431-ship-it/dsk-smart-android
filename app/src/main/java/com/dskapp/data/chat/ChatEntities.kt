@@ -10,6 +10,7 @@ import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -97,6 +98,30 @@ interface ChatDao {
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId AND id >= :fromId")
     suspend fun deleteMessagesFrom(conversationId: Long, fromId: Long)
+
+    /**
+     * Removes [fromId] and every later message of the thread and returns what was removed.
+     * One transaction: reading the rows and deleting them as two separate statements could
+     * delete a message that was stored in between without ever returning it (its attachment
+     * files would then stay on disk forever), and a crash between the delete and the summary
+     * reset would leave a summary that describes messages which no longer exist.
+     */
+    @Transaction
+    suspend fun truncateThread(conversationId: Long, fromId: Long): List<MessageEntity> {
+        val removed = getMessagesFrom(conversationId, fromId)
+        deleteMessagesFrom(conversationId, fromId)
+        val upTo = getConversation(conversationId)?.summaryUpToId
+        if (upTo != null && upTo >= fromId) setSummary(conversationId, null, null)
+        return removed
+    }
+
+    /** Inserts a thread and its messages together, so a failed restore leaves no empty thread. */
+    @Transaction
+    suspend fun insertThread(conversation: ConversationEntity, messages: List<MessageEntity>): Long {
+        val newId = insertConversation(conversation.copy(id = 0L))
+        insertMessages(messages.map { it.copy(id = 0L, conversationId = newId) })
+        return newId
+    }
 
     @Insert
     suspend fun insertConversation(conversation: ConversationEntity): Long

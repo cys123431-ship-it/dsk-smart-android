@@ -121,13 +121,27 @@ echo.
 
 set "BUSY="
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do set "BUSY=%%P"
-if not "!BUSY!"=="" (
-    echo   [!] port %PORT% is already in use ^(PID !BUSY!^).
-    echo       DSK Remote looks like it is already running.
+set "GBUSY="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%GOOSEPORT% .*LISTENING"') do set "GBUSY=%%P"
+if not "!BUSY!"=="" if not "!GBUSY!"=="" (
+    echo   [!] DSK Remote is already running ^(front door PID !BUSY!, goose PID !GBUSY!^).
     echo       The phone can connect now. To restart: Stop-DSK-Remote.bat
     echo.
     pause
     exit /b 1
+)
+REM The front door can outlive goose. It used to be reported as "already running" while
+REM every phone connection failed; start the missing half instead.
+if not "!BUSY!"=="" if "!GBUSY!"=="" (
+    echo   [!] The front door ^(port %PORT%^) is up but goose ^(port %GOOSEPORT%^) is not running.
+    echo       Starting goose again ...
+    start /d "%~dp0" "DSK Remote server" /min cmd /c ""%~f0"" --hidden
+    ping -n 8 127.0.0.1 >nul 2>&1
+    echo       Done. If the phone still cannot connect: Stop-DSK-Remote.bat, then start again.
+    echo.
+    call :showqr
+    pause
+    exit /b 0
 )
 
 echo   A QR window is opening next to this one. In the phone app:
@@ -162,7 +176,7 @@ if defined OK (
     echo   Ready. Phone can connect.
     echo   Scan the QR window with the phone app, or type the address above.
 ) else (
-    echo   [!] The server did not come up. See server.log next to this file.
+    echo   [!] The server did not come up. See server.log and proxy.log next to this file.
 )
 echo.
 pause
@@ -170,8 +184,6 @@ exit /b 0
 
 REM ---------- hidden launcher: goose (loopback) + proxy (network) ----------
 :hidden
-if exist "%~dp0server.log" del "%~dp0server.log" >nul 2>&1
-
 set "GOOSE_SERVER__SECRET_KEY=%SECRET%"
 set "GOOSE_WORKING_DIR=%WORKDIR%"
 set "GOOSES="
@@ -184,8 +196,21 @@ set "ORIGINS=--allowed-origin http://127.0.0.1:%PORT% --allowed-origin http://lo
 for %%L in (%LANLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
 for %%L in (%TSLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%PORT%"
 
+set "GOOSEARGS=serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS%"
+
+REM Start only the half that is missing. After a crash one of the two can still be alive,
+REM and a second copy of it would only fail on the busy port.
+set "GUP="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%GOOSEPORT% .*LISTENING"') do set "GUP=%%P"
+set "PUP="
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do set "PUP=%%P"
+if not defined GUP if not defined PUP (
+    if exist "%~dp0server.log" del "%~dp0server.log" >nul 2>&1
+    if exist "%~dp0proxy.log" del "%~dp0proxy.log" >nul 2>&1
+)
+
 REM goose: loopback only. never 0.0.0.0, or every phone gets 403.
-start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS% >> "%~dp0server.log" 2>&1"
+if not defined GUP start "DSK goose" /min cmd /c ""%GOOSES%" %GOOSEARGS% >> "%~dp0server.log" 2>&1"
 
 REM wait for goose to bind before the proxy tries to reach it
 set "UP="
@@ -197,14 +222,17 @@ for /l %%N in (1,1,40) do (
 )
 
 if not defined UP (
-    echo [%DATE% %TIME%] goose did not start on port %GOOSEPORT% >> "%~dp0server.log"
+    echo [%DATE% %TIME%] goose did not start on port %GOOSEPORT% >> "%~dp0proxy.log"
     exit /b 1
 )
 
-echo [%DATE% %TIME%] goose up on 127.0.0.1:%GOOSEPORT% >> "%~dp0server.log"
+echo [%DATE% %TIME%] goose up on 127.0.0.1:%GOOSEPORT% >> "%~dp0proxy.log"
 
-REM proxy: the front door the phone talks to.
-start "DSK proxy" /min powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0proxy.ps1" -Port %PORT% -LogPath "%~dp0server.log"
+REM proxy: the front door the phone talks to. -GooseExe / -GooseArgs let it start goose
+REM again by itself when goose is gone (the phone user may be far from this PC).
+REM It writes proxy.log, not server.log: the ">>" above keeps server.log locked for goose,
+REM and every line the door tried to add there was silently lost.
+if not defined PUP start "DSK proxy" /min powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0proxy.ps1" -Port %PORT% -LogPath "%~dp0proxy.log" -GooseExe "%GOOSES%" -GooseArgs "%GOOSEARGS%"
 exit /b 0
 
 REM ---------- 2: this window ----------
@@ -223,14 +251,15 @@ for %%L in (%TSLIST%) do set "ORIGINS=!ORIGINS! --allowed-origin http://%%L:%POR
 
 echo.
 
+set "GOOSEARGS=serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS%"
 echo   Starting goose on 127.0.0.1:%GOOSEPORT% ...
-start "DSK goose" /min cmd /c ""%GOOSES%" serve --host 127.0.0.1 --port %GOOSEPORT% --platform desktop %ORIGINS% >> "%~dp0server.log" 2>&1"
+start "DSK goose" /min cmd /c ""%GOOSES%" %GOOSEARGS% >> "%~dp0server.log" 2>&1"
 ping -n 6 127.0.0.1 >nul 2>&1
 
 echo   Starting the phone front door on 0.0.0.0:%PORT% ...
 echo   Close this window or press Ctrl+C to stop both.
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0proxy.ps1" -Port %PORT% -LogPath "%~dp0server.log"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0proxy.ps1" -Port %PORT% -LogPath "%~dp0proxy.log" -GooseExe "%GOOSES%" -GooseArgs "%GOOSEARGS%"
 exit /b 0
 
 REM ---------- 3: stop ----------

@@ -131,7 +131,9 @@ object AgentBridge {
             val result = ServiceLocator.aiClient(svc).complete(
                 systemPrompt = SUMMARY_PROMPT,
                 messages = listOf(AiMessage(AiRole.USER, screen.render())),
-                maxTokens = 800
+                // Reasoning models spend part of the budget thinking; 800 left too little for
+                // the summary itself and it came back cut off or empty.
+                maxTokens = SUMMARY_TOKENS
             )
             val text = when (result) {
                 is AiResult.Success -> result.text
@@ -149,6 +151,8 @@ object AgentBridge {
             outcome.log.forEach { append("- ").append(it).append('\n') }
         }
     }
+
+    private const val SUMMARY_TOKENS = 1200
 
     private const val SUMMARY_PROMPT =
         "You receive a text listing of the elements on the user's phone screen. Summarise in Korean what " +
