@@ -16,6 +16,7 @@ import com.dskapp.data.remote.AcpSession
 import com.dskapp.data.remote.AcpSessionSummary
 import com.dskapp.data.remote.AcpToolCall
 import com.dskapp.data.remote.AcpUsage
+import com.dskapp.data.remote.RemoteCwd
 import com.dskapp.data.settings.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -173,7 +174,7 @@ class RemoteChatViewModel(
                 if (!init.canLoadSession && loadSessionId != null) {
                     throw AcpException("이 goose는 세션 이어하기를 지원하지 않습니다.")
                 }
-                val cwd = effectiveCwd(appSettings.remoteCwd)
+                val cwd = pickCwd(newClient, init.canListSessions, appSettings.remoteCwd, loadSessionId)
                 val session = if (loadSessionId == null) {
                     newClient.newSession(cwd)
                 } else {
@@ -420,8 +421,34 @@ class RemoteChatViewModel(
         }
     }
 
-    private fun effectiveCwd(configured: String): String =
-        configured.trim().ifBlank { DEFAULT_REMOTE_CWD }
+    /**
+     * The folder for session/new or session/load. goose only takes an absolute PC path, which
+     * the phone cannot guess; [RemoteCwd] explains the order. The session list is only asked
+     * for when Settings has no usable path.
+     */
+    private suspend fun pickCwd(
+        active: AcpClient,
+        canList: Boolean,
+        configured: String,
+        loadSessionId: String?
+    ): String {
+        val typed = configured.trim()
+        if (typed.isNotEmpty() && RemoteCwd.isAbsolute(typed)) return typed
+        val sessions = if (canList) {
+            try {
+                active.listSessions(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ErrorLog.record("remote", "session/list for cwd failed: ${e.message}")
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        return RemoteCwd.resolve(configured, sessions, loadSessionId)
+            ?: throw AcpException(RemoteCwd.missingMessage(configured))
+    }
 
     private fun closeClient() {
         eventJob?.cancel()
@@ -436,13 +463,6 @@ class RemoteChatViewModel(
     }
 
     companion object {
-        /**
-         * goose defaults cwd to the directory it was started in; the CLI expands "~" in
-         * cwd on the server side, so this is a path the PC can resolve without knowing the
-         * phone's filesystem.
-         */
-        const val DEFAULT_REMOTE_CWD = "~"
-
         private const val NEW_SESSION_KEY = "\u0000new"
 
         fun factory(settings: SettingsRepository, aiClient: AiClient): ViewModelProvider.Factory =

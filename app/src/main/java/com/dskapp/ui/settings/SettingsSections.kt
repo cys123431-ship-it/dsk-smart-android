@@ -572,7 +572,7 @@ fun RemoteSection(
             label = { Text("작업 폴더 (PC 경로)") },
             placeholder = { Text("C:\\Users\\me\\work\\project") },
             singleLine = true,
-            supportingText = { Text("비우면 goose 기본 폴더에서 시작합니다.") },
+            supportingText = { Text("비우면 PC goose가 최근에 쓴 폴더(보통 DSK Remote 작업 폴더)에서 시작합니다. 넣을 때는 PC의 전체 경로로.") },
             modifier = Modifier.fillMaxWidth()
         )
     } else {

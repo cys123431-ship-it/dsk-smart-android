@@ -397,8 +397,7 @@ class AcpClient(
             val deferred = pending.remove(idNum) ?: return
             if (message.containsKey("error")) {
                 val error = message["error"]?.jsonObjectOrNull()
-                val detail = error?.string("message") ?: "알 수 없는 오류"
-                deferred.completeExceptionally(AcpException(detail))
+                deferred.completeExceptionally(AcpException(errorText(error)))
             } else {
                 val result = message["result"]?.jsonObjectOrNull() ?: JsonObject(emptyMap())
                 deferred.complete(result)
@@ -438,6 +437,17 @@ class AcpClient(
         }
     }
 
+    /**
+     * "message: data" from a JSON-RPC error. goose puts the useful part in `data`
+     * (e.g. "Invalid params" + "cwd must be an absolute path"); showing only the message left
+     * the phone with a two-word riddle.
+     */
+    private fun errorText(error: JsonObject?): String {
+        val message = error?.string("message")?.takeIf { it.isNotBlank() } ?: "알 수 없는 오류"
+        val data = (error?.get("data") as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
+        return if (data.isNullOrEmpty() || message.contains(data)) message else "$message: ${data.take(300)}"
+    }
+
     private fun failAll(reason: String) {
         val snapshot = pending.keys.toList()
         snapshot.forEach { id ->
@@ -450,8 +460,6 @@ class AcpClient(
     }
 
     companion object {
-        const val DEFAULT_CWD = "~"
-
         /** Deadline for the WebSocket handshake; ACP calls have their own timeouts. */
         const val CONNECT_TIMEOUT_MS = 15_000L
     }

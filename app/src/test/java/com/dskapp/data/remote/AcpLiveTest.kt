@@ -213,6 +213,38 @@ class AcpLiveTest {
         }
     }
 
+    /**
+     * What the phone does when the 작업 폴더 setting is blank (the default). 1.11.0 sent "~"
+     * here and goose refused every new chat with "Invalid params: cwd must be an absolute
+     * path" - the other live tests passed an absolute folder and never saw it.
+     */
+    @Test
+    fun blankFolderSettingStillOpensANewChat() = runBlocking {
+        withTimeout(60_000) {
+            val client = AcpClient(OkHttpClient(), url, secret())
+            try {
+                client.connect()
+                val init = client.initialize()
+                // Proof that the old value really is refused, so this test keeps its meaning.
+                try {
+                    client.newSession("~")
+                    fail("goose accepted a relative cwd; the RemoteCwd rules may be unnecessary now")
+                } catch (e: AcpException) {
+                    assertTrue("message was: ${e.message}", e.message.orEmpty().contains("Invalid params"))
+                }
+                val sessions = if (init.canListSessions) client.listSessions(null) else emptyList()
+                val cwd = RemoteCwd.resolve("", sessions)
+                assertTrue("a blank setting must resolve to a PC folder (sessions: ${sessions.size})", cwd != null)
+                assertTrue("resolved folder must be absolute: $cwd", RemoteCwd.isAbsolute(cwd!!))
+                val opened = client.newSession(cwd)
+                assertTrue("session/new must succeed with the resolved folder", opened.sessionId.isNotBlank())
+                println("LIVE session id: ${opened.sessionId}")
+            } finally {
+                client.close()
+            }
+        }
+    }
+
     @Test
     fun wrongKeyIsRefusedWithAClearMessage() = runBlocking {
         withTimeout(60_000) {
