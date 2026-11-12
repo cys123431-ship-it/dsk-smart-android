@@ -19,6 +19,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
+import android.widget.Toast
+import com.dskapp.data.ai.ModelRefresher
+import kotlinx.coroutines.launch
 import com.dskapp.data.settings.SettingsRepository.ThemeMode
 import com.dskapp.di.ServiceLocator
 import com.dskapp.ui.DskAppNavHost
@@ -98,6 +102,16 @@ class MainActivity : ComponentActivity() {
         // period does not ask again.
         if (lockOn && stoppedAt != 0L && SystemClock.elapsedRealtime() - stoppedAt > AppLock.RELOCK_AFTER_MS) {
             locked = true
+        }
+        // Providers add and drop models without notice: re-read the list every few hours.
+        lifecycleScope.launch {
+            val missing = runCatching {
+                ServiceLocator.modelRefresher(this@MainActivity)
+                    .refreshIfStale(ModelRefresher.ON_START_MAX_AGE_MS)
+            }.getOrNull()
+            if (missing != null) {
+                Toast.makeText(this@MainActivity, ModelRefresher.missingMessage(missing), Toast.LENGTH_LONG).show()
+            }
         }
     }
 

@@ -28,6 +28,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
+/**
+ * Row text for a model: [shown] (full or short name) plus a warning when the server listed
+ * the model but it failed to answer recently.
+ */
+fun modelLabel(model: String, shown: String, unavailable: Set<String>): String =
+    if (model in unavailable) "$shown  ⚠ 최근 응답 실패" else shown
+
 /** Fixed height for the settings model box, so it can live inside the scrolling screen. */
 val MODEL_LIST_BOX_HEIGHT = 232.dp
 

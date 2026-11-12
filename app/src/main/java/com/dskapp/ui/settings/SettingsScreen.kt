@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dskapp.data.settings.SettingsRepository
 import com.dskapp.ui.components.MODEL_LIST_BOX_HEIGHT
 import com.dskapp.ui.components.ScrollableModelList
+import com.dskapp.ui.components.modelLabel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -165,7 +166,8 @@ fun SettingsScreen(
                 selected = state.model,
                 onSelect = viewModel::onModelChange,
                 onLoadModels = viewModel::loadModels,
-                isLoading = state.isLoadingModels
+                isLoading = state.isLoadingModels,
+                unavailable = state.unavailableModels
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -515,7 +517,8 @@ private fun ModelPicker(
     selected: String,
     onSelect: (String) -> Unit,
     onLoadModels: () -> Unit,
-    isLoading: Boolean
+    isLoading: Boolean,
+    unavailable: Set<String> = emptySet()
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
@@ -553,6 +556,7 @@ private fun ModelPicker(
         models = models,
         selected = selected,
         onSelect = { model -> model?.let(onSelect) },
-        height = MODEL_LIST_BOX_HEIGHT
+        height = MODEL_LIST_BOX_HEIGHT,
+        labelFor = { modelLabel(it, it, unavailable) }
     )
 }

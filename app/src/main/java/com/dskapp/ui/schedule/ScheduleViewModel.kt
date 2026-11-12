@@ -39,6 +39,10 @@ class ScheduleViewModel(
         .map { it.knownModels }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val unavailableModels: StateFlow<Set<String>> = settings.state
+        .map { it.unavailableModels }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
     /** Model shown as the "기본 모델" entry; trimmed to the last path segment in the UI. */
     val defaultModel: String = settings.state.value.model
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.dskapp.agent.AgentLevel
+import com.dskapp.data.ai.ModelCatalog
 import com.dskapp.data.ai.OpenAiCompatibleClient
 import com.dskapp.data.ai.ProviderConfig
 import com.dskapp.data.ai.TokenUsage
@@ -235,9 +236,68 @@ class SettingsRepository(context: Context) {
         refresh()
     }
 
-    /** Remembers the server's model list so the per-thread picker works offline. */
-    fun saveKnownModels(models: List<String>) {
-        prefs.edit { putString(KEY_KNOWN_MODELS, models.joinToString("\n")) }
+    /**
+     * Remembers the server's model list so the per-thread picker works offline.
+     * [fetchedFrom] is the base URL the list came from; null (a placeholder list after a
+     * server change) leaves the list "never fetched" so the next check loads it at once.
+     */
+    fun saveKnownModels(models: List<String>, fetchedFrom: String? = null) {
+        prefs.edit {
+            putString(KEY_KNOWN_MODELS, models.joinToString("\n"))
+            if (fetchedFrom != null) {
+                putLong(KEY_MODELS_FETCHED_AT, System.currentTimeMillis())
+                putString(KEY_MODELS_FETCHED_URL, fetchedFrom.trim().trimEnd('/'))
+                // A fresh list from the server: models it no longer serves cannot stay flagged.
+                val flagged = prefs.getStringSet(KEY_UNAVAILABLE_MODELS, null).orEmpty()
+                putStringSet(KEY_UNAVAILABLE_MODELS, flagged.filter { it in models }.toSet())
+            } else {
+                remove(KEY_MODELS_FETCHED_AT)
+                remove(KEY_MODELS_FETCHED_URL)
+            }
+        }
+        refresh()
+    }
+
+    /**
+     * True when the saved model list is older than [maxAgeMs] or came from another server.
+     * Providers add and drop models without telling anyone, so the app re-reads the list on
+     * its own instead of waiting for the user to press "모델 목록 불러오기".
+     */
+    fun modelsStale(maxAgeMs: Long): Boolean {
+        val at = prefs.getLong(KEY_MODELS_FETCHED_AT, 0L)
+        val from = prefs.getString(KEY_MODELS_FETCHED_URL, null)
+        val current = readState().baseUrl.trim().trimEnd('/')
+        if (at == 0L || from != current) return true
+        val age = System.currentTimeMillis() - at
+        return age < 0 || age > maxAgeMs
+    }
+
+    /** Model the user was last warned about as missing from the server list, to warn once. */
+    fun missingModelWarned(): String? = prefs.getString(KEY_MISSING_MODEL_WARNED, null)
+
+    fun setMissingModelWarned(model: String?) {
+        prefs.edit {
+            if (model == null) remove(KEY_MISSING_MODEL_WARNED) else putString(KEY_MISSING_MODEL_WARNED, model)
+        }
+    }
+
+    /**
+     * A model the server listed but could not answer with ("route unavailable", "not found").
+     * Shown with a warning in the pickers until it answers once or the list is refreshed
+     * without it.
+     */
+    fun markModelUnavailable(model: String) {
+        if (model.isBlank()) return
+        val current = prefs.getStringSet(KEY_UNAVAILABLE_MODELS, null).orEmpty()
+        if (model in current) return
+        prefs.edit { putStringSet(KEY_UNAVAILABLE_MODELS, current + model) }
+        refresh()
+    }
+
+    fun markModelWorking(model: String) {
+        val current = prefs.getStringSet(KEY_UNAVAILABLE_MODELS, null).orEmpty()
+        if (model !in current) return
+        prefs.edit { putStringSet(KEY_UNAVAILABLE_MODELS, current - model) }
         refresh()
     }
 
@@ -285,8 +345,11 @@ class SettingsRepository(context: Context) {
             ?: OpenAiCompatibleClient.DEFAULT_BASE_URL
         val model = prefs.getString(KEY_MODEL, null)?.takeIf { it.isNotBlank() }
             ?: OpenAiCompatibleClient.DEFAULT_MODEL
+        // Lists saved by older versions still hold embedding / OCR / rerank models: drop
+        // them here too, but never the model the user has chosen.
         val knownModels = prefs.getString(KEY_KNOWN_MODELS, null)
             ?.split('\n')?.filter { it.isNotBlank() }
+            ?.filter { it == model || ModelCatalog.isChatModel(it) }
             ?.takeIf { it.isNotEmpty() }
             ?: OpenAiCompatibleClient.SUGGESTED_MODELS
         return AppSettings(
@@ -304,6 +367,7 @@ class SettingsRepository(context: Context) {
             priceOutputPerMillion = prefs.takeIf { it.contains(KEY_PRICE_OUT) }
                 ?.getFloat(KEY_PRICE_OUT, 0f)?.toDouble(),
             knownModels = knownModels,
+            unavailableModels = prefs.getStringSet(KEY_UNAVAILABLE_MODELS, null).orEmpty().toSet(),
             autoReadLinks = prefs.getBoolean(KEY_AUTO_READ_LINKS, true),
             webSearch = prefs.getBoolean(KEY_WEB_SEARCH, true),
             searchProvider = SearchProviderType.fromName(prefs.getString(KEY_SEARCH_PROVIDER, null)),
@@ -363,6 +427,8 @@ class SettingsRepository(context: Context) {
         val priceInputPerMillion: Double? = null,
         val priceOutputPerMillion: Double? = null,
         val knownModels: List<String> = OpenAiCompatibleClient.SUGGESTED_MODELS,
+        /** Listed by the server but failed to answer recently; pickers mark these. */
+        val unavailableModels: Set<String> = emptySet(),
         /** Fetch web pages for URLs in a sent message and attach their text. */
         val autoReadLinks: Boolean = true,
         /** Let the model ask for web searches; [searchProvider] runs them. */
@@ -419,6 +485,10 @@ class SettingsRepository(context: Context) {
         private const val KEY_PRICE_IN = "price_input_per_million"
         private const val KEY_PRICE_OUT = "price_output_per_million"
         private const val KEY_KNOWN_MODELS = "known_models"
+        private const val KEY_MODELS_FETCHED_AT = "known_models_fetched_at"
+        private const val KEY_MODELS_FETCHED_URL = "known_models_fetched_url"
+        private const val KEY_UNAVAILABLE_MODELS = "unavailable_models"
+        private const val KEY_MISSING_MODEL_WARNED = "missing_model_warned"
         private const val KEY_AUTO_READ_LINKS = "auto_read_links"
         private const val KEY_WEB_SEARCH = "web_search"
         private const val KEY_SEARCH_PROVIDER = "search_provider"

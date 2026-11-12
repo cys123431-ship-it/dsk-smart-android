@@ -36,6 +36,16 @@ object ServiceLocator {
     @Volatile
     private var commandRepository: CommandRepository? = null
 
+    @Volatile
+    private var modelRefresher: com.dskapp.data.ai.ModelRefresher? = null
+
+    /** Re-reads the provider's model list when the saved one is old. */
+    fun modelRefresher(context: Context): com.dskapp.data.ai.ModelRefresher =
+        modelRefresher ?: synchronized(this) {
+            modelRefresher ?: com.dskapp.data.ai.ModelRefresher(settings(context), aiClient(context))
+                .also { modelRefresher = it }
+        }
+
     /** One connection pool for the AI server and web links alike. */
     private val httpClient: OkHttpClient by lazy { OpenAiCompatibleClient.defaultHttpClient() }
 
@@ -95,7 +105,11 @@ object ServiceLocator {
                 OpenAiCompatibleClient(
                     client = httpClient,
                     configProvider = { settings.providerConfig() },
-                    usageRecorder = settings::recordUsage
+                    usageRecorder = settings::recordUsage,
+                    modelHealth = object : OpenAiCompatibleClient.ModelHealth {
+                        override fun unavailable(model: String) = settings.markModelUnavailable(model)
+                        override fun worked(model: String) = settings.markModelWorking(model)
+                    }
                 ).also { aiClient = it }
             }
         }

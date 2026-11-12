@@ -39,6 +39,8 @@ data class ChatUiState(
     val threadModel: String? = null,
     val defaultModel: String = "",
     val knownModels: List<String> = emptyList(),
+    /** Listed by the server but failed to answer recently; the picker marks these. */
+    val unavailableModels: Set<String> = emptySet(),
     /** The next message is a phone-agent goal instead of a chat question. */
     val agentMode: Boolean = false
 ) {

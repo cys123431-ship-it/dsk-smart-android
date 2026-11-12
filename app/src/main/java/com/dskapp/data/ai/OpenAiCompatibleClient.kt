@@ -36,8 +36,23 @@ import java.util.concurrent.atomic.AtomicReference
 class OpenAiCompatibleClient(
     private val client: OkHttpClient,
     private val configProvider: () -> ProviderConfig,
-    private val usageRecorder: (TokenUsage) -> Unit = {}
+    private val usageRecorder: (TokenUsage) -> Unit = {},
+    private val modelHealth: ModelHealth = ModelHealth.None
 ) : AiClient {
+
+    /**
+     * Told when a model the provider lists cannot answer, and when it answers again, so the
+     * pickers can mark models that are listed but not actually served.
+     */
+    interface ModelHealth {
+        fun unavailable(model: String)
+        fun worked(model: String)
+
+        object None : ModelHealth {
+            override fun unavailable(model: String) = Unit
+            override fun worked(model: String) = Unit
+        }
+    }
 
     /**
      * Set once a server rejects `stream_options` (400). Usage is then simply unknown for
@@ -45,6 +60,35 @@ class OpenAiCompatibleClient(
      */
     @Volatile
     private var streamUsageUnsupported = false
+
+    /**
+     * Output-token caps learned from rejections ("max_completion_tokens (8192) exceeds model
+     * max_output_tokens (4096)"), per model. Later requests ask for no more than the cap, so
+     * only the first request to such a model pays for the retry.
+     */
+    private val outputCaps = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    private fun resolvedModel(config: ProviderConfig, model: String?): String =
+        model?.takeIf { it.isNotBlank() } ?: config.model
+
+    private fun cappedTokens(model: String, requested: Int): Int =
+        outputCaps[model]?.let { minOf(it, requested) } ?: requested
+
+    /** Remembers [model]'s cap when [payload] is a "too many output tokens" rejection. */
+    private fun learnOutputCap(model: String, status: Int, payload: String, requested: Int): Int? {
+        if (status != 400 && status != 422) return null
+        val text = runCatching {
+            val envelope = ChatJson.decodeFromString(ChatErrorEnvelope.serializer(), payload)
+            envelope.error?.message ?: envelope.message
+        }.getOrNull() ?: payload
+        val cap = ModelCatalog.outputLimitFrom(text, requested) ?: return null
+        outputCaps[model] = cap
+        return cap
+    }
+
+    private fun report(model: String, error: AiError) {
+        if (error is AiError.ModelUnavailable) modelHealth.unavailable(model)
+    }
 
     override suspend fun complete(
         systemPrompt: String,
@@ -54,16 +98,27 @@ class OpenAiCompatibleClient(
     ): AiResult = withContext(Dispatchers.IO) {
         val config = configProvider()
         if (!config.isComplete) return@withContext AiResult.Failure(AiError.NotConfigured)
+        val target = resolvedModel(config, model)
+        var tokens = cappedTokens(target, maxTokens)
 
-        val request = chatRequest(
+        fun request(tokens: Int) = chatRequest(
             config,
-            buildRequest(config, model, systemPrompt, messages, maxTokens, stream = false, includeUsage = false),
+            buildRequest(config, model, systemPrompt, messages, tokens, stream = false, includeUsage = false),
             accept = "application/json"
         )
 
         try {
-            val first = fetch(request)
-            if (first.ok) return@withContext parseCompleteResponse(first.body)
+            var first = fetch(request(tokens))
+            // The model allows fewer output tokens than asked for: ask again within its cap.
+            if (!first.ok) {
+                learnOutputCap(target, first.code, first.body, tokens)?.let { cap ->
+                    tokens = cap
+                    first = fetch(request(tokens))
+                }
+            }
+            if (first.ok) return@withContext parseCompleteResponse(first.body).also {
+                if (it is AiResult.Success) modelHealth.worked(target)
+            }
 
             // Reasoning models (DeepSeek / Kimi / GLM) can spend the whole max_tokens
             // budget on hidden thinking and fail with "no room for content". Asking the
@@ -72,15 +127,19 @@ class OpenAiCompatibleClient(
                 val retry = chatRequest(
                     config,
                     buildRequest(
-                        config, model, systemPrompt, messages, maxTokens,
+                        config, model, systemPrompt, messages, tokens,
                         stream = false, includeUsage = false, disableThinking = true
                     ),
                     accept = "application/json"
                 )
                 val second = fetch(retry)
-                if (second.ok) return@withContext parseCompleteResponse(second.body)
+                if (second.ok) return@withContext parseCompleteResponse(second.body).also {
+                    if (it is AiResult.Success) modelHealth.worked(target)
+                }
             }
-            AiResult.Failure(parseError(first.code, first.body))
+            val error = parseError(first.code, first.body, target)
+            report(target, error)
+            AiResult.Failure(error)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
@@ -156,7 +215,7 @@ class OpenAiCompatibleClient(
             lower.contains("reasoning") || lower.contains("thinking")
     }
 
-    override suspend fun listModels(): Result<List<String>> = withContext(Dispatchers.IO) {
+    override suspend fun listModels(): Result<ModelListing> = withContext(Dispatchers.IO) {
         runCatching {
             val config = configProvider()
             require(config.baseUrl.isNotBlank() && config.apiKey.isNotBlank()) { "설정이 필요합니다." }
@@ -172,9 +231,7 @@ class OpenAiCompatibleClient(
                 require(response.isSuccessful) {
                     "모델 목록을 가져오지 못했습니다 (${response.code})"
                 }
-                ChatJson.decodeFromString(ModelsResponse.serializer(), payload)
-                    .data.map { it.id }
-                    .sorted()
+                ModelCatalog.listing(ModelCatalog.parse(payload))
             }
         }
     }
@@ -196,10 +253,13 @@ class OpenAiCompatibleClient(
             return@flow
         }
 
+        val target = resolvedModel(config, model)
+        var tokens = cappedTokens(target, maxTokens)
+
         fun newCall(includeUsage: Boolean): Call = client.newCall(
             chatRequest(
                 config,
-                buildRequest(config, model, systemPrompt, messages, maxTokens, stream = true, includeUsage),
+                buildRequest(config, model, systemPrompt, messages, tokens, stream = true, includeUsage),
                 accept = "text/event-stream"
             )
         )
@@ -213,7 +273,7 @@ class OpenAiCompatibleClient(
         // interrupt. A sibling guard coroutine wakes up on cancellation and cancels the OkHttp
         // call, closing the socket, so "stop" really stops the download instead of silently
         // reading (and paying for) the rest of the answer.
-        val includeUsage = !streamUsageUnsupported
+        var includeUsage = !streamUsageUnsupported
         val current = AtomicReference(newCall(includeUsage))
         coroutineScope {
             val guard = launch {
@@ -224,16 +284,28 @@ class OpenAiCompatibleClient(
                 }
             }
             try {
-                val retry = readStream(
-                    current.get(), includeUsage, onText, onError, reportUsage, onReasoning, onTruncated
-                )
-                if (retry) {
-                    streamUsageUnsupported = true
-                    current.set(newCall(includeUsage = false))
-                    currentCoroutineContext().ensureActive()
-                    readStream(
-                        current.get(), includeUsage = false, onText, onError, reportUsage, onReasoning, onTruncated
+                // At most one retry per reason: without stream_options, and within the
+                // model's output cap. Each is decided from the rejection, before any text.
+                var capRetried = false
+                while (true) {
+                    val outcome = readStream(
+                        current.get(), includeUsage, target, tokens, allowCapRetry = !capRetried,
+                        onText, onError, reportUsage, onReasoning, onTruncated
                     )
+                    when (outcome) {
+                        StreamOutcome.Done -> break
+                        StreamOutcome.RetryWithoutUsage -> {
+                            if (!includeUsage) break
+                            streamUsageUnsupported = true
+                            includeUsage = false
+                        }
+                        is StreamOutcome.RetryWithCap -> {
+                            capRetried = true
+                            tokens = outcome.maxTokens
+                        }
+                    }
+                    currentCoroutineContext().ensureActive()
+                    current.set(newCall(includeUsage))
                 }
             } finally {
                 guard.cancel()
@@ -241,19 +313,29 @@ class OpenAiCompatibleClient(
         }
     }.flowOn(Dispatchers.IO)
 
+    private sealed interface StreamOutcome {
+        data object Done : StreamOutcome
+        data object RetryWithoutUsage : StreamOutcome
+        data class RetryWithCap(val maxTokens: Int) : StreamOutcome
+    }
+
     /**
-     * Reads one SSE response. Returns true only when the server rejected `stream_options`
-     * and the caller should retry without it; every other outcome is reported via callbacks.
+     * Reads one SSE response. Asks for a retry only when the server rejected the request
+     * before answering: `stream_options` unsupported, or more output tokens than the model
+     * allows. Every other outcome is reported via callbacks.
      */
     private suspend fun readStream(
         call: Call,
         includeUsage: Boolean,
+        model: String,
+        maxTokens: Int,
+        allowCapRetry: Boolean,
         onText: (String) -> Unit,
         onError: (AiError) -> Unit,
         onUsage: (TokenUsage) -> Unit,
         onReasoning: (String) -> Unit,
         onTruncated: () -> Unit
-    ): Boolean {
+    ): StreamOutcome {
         try {
             call.execute().use { okResponse ->
                 if (!okResponse.isSuccessful) {
@@ -263,13 +345,21 @@ class OpenAiCompatibleClient(
                     if (includeUsage && okResponse.code == 400 &&
                         payload.contains("stream_options", ignoreCase = true)
                     ) {
-                        return true
+                        return StreamOutcome.RetryWithoutUsage
                     }
-                    onError(parseError(okResponse.code, payload))
-                    return false
+                    if (allowCapRetry) {
+                        learnOutputCap(model, okResponse.code, payload, maxTokens)?.let { cap ->
+                            return StreamOutcome.RetryWithCap(cap)
+                        }
+                    }
+                    val error = parseError(okResponse.code, payload, model)
+                    report(model, error)
+                    onError(error)
+                    return StreamOutcome.Done
                 }
 
-                val source = okResponse.body?.source() ?: return false
+                val source = okResponse.body?.source() ?: return StreamOutcome.Done
+                var answered = false
                 while (!source.exhausted()) {
                     // No further deltas once the user pressed stop.
                     currentCoroutineContext().ensureActive()
@@ -290,7 +380,13 @@ class OpenAiCompatibleClient(
                         if (thought.isNotEmpty()) onReasoning(thought)
                     }
                     delta?.content?.let { text ->
-                        if (text.isNotEmpty()) onText(text)
+                        if (text.isNotEmpty()) {
+                            onText(text)
+                            if (!answered) {
+                                answered = true
+                                modelHealth.worked(model)
+                            }
+                        }
                     }
                     // The token budget ran out mid-answer: the text simply stops, so say so.
                     if (choice?.finishReason.equals("length", ignoreCase = true)) onTruncated()
@@ -307,7 +403,7 @@ class OpenAiCompatibleClient(
         } catch (e: Exception) {
             onError(AiError.Unexpected(e.message ?: "알 수 없는 오류"))
         }
-        return false
+        return StreamOutcome.Done
     }
 
     override fun testHttpClient(): OkHttpClient = client
@@ -358,13 +454,24 @@ class OpenAiCompatibleClient(
         }
     )
 
-    /** Maps an HTTP failure to a typed [AiError], preferring the provider's own message. */
-    internal fun parseError(status: Int, payload: String): AiError {
+    /**
+     * Maps an HTTP failure to a typed [AiError], preferring the provider's own message.
+     * [model] is the model the request asked for, used when the provider does not name it.
+     */
+    internal fun parseError(status: Int, payload: String, model: String? = null): AiError {
         val providerMessage = runCatching {
             val envelope = ChatJson.decodeFromString(ChatErrorEnvelope.serializer(), payload)
             envelope.error?.message ?: envelope.message
         }.getOrNull()
-        modelUnavailable(status, providerMessage ?: payload)?.let { return it }
+        val text = providerMessage ?: payload
+        modelUnavailable(status, text)?.let { found ->
+            return if (found.model.isBlank() && !model.isNullOrBlank()) found.copy(model = model) else found
+        }
+        // "Generation route is unavailable for this deployment": the provider still lists the
+        // model, but nothing behind it can answer. Retrying the same model will not help.
+        if (status >= 500 && ROUTE_DOWN_WORDS.any { text.lowercase().contains(it) }) {
+            return AiError.ModelUnavailable(model.orEmpty(), serverSide = true)
+        }
 
         return when (status) {
             401, 403 -> AiError.Unauthorized(providerMessage ?: "인증 실패")
@@ -392,6 +499,10 @@ class OpenAiCompatibleClient(
         private val MISSING_WORDS = listOf(
             "not found", "does not exist", "not exist", "not available", "unavailable",
             "model_not_found", "unknown model", "invalid model", "no such model", "not supported"
+        )
+        private val ROUTE_DOWN_WORDS = listOf(
+            "route is unavailable", "unavailable for this deployment", "no deployment",
+            "deployment not found", "deployment is unavailable"
         )
         private val MODEL_NAME = Regex("""[Mm]odel\s*[:=]?\s*['"`]([^'"`]{1,200})['"`]""")
 

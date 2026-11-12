@@ -70,6 +70,7 @@ import com.dskapp.data.export.ExportFormat
 import com.dskapp.data.export.ExportService
 import com.dskapp.ui.components.ChatComposer
 import com.dskapp.ui.components.ModelMenuItems
+import com.dskapp.ui.components.modelLabel
 import com.dskapp.ui.voice.VoiceInputController
 import java.io.File
 import kotlinx.coroutines.launch
@@ -384,7 +385,11 @@ internal fun ChatScaffold(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        ThreadModelPicker(state = state, onSelect = viewModel::setThreadModel)
+                        ThreadModelPicker(
+                            state = state,
+                            onSelect = viewModel::setThreadModel,
+                            onOpen = viewModel::refreshModels
+                        )
                     }
                 },
                 navigationIcon = {
@@ -488,11 +493,14 @@ internal fun ChatScaffold(
  * entry returns the thread to the default model from Settings.
  */
 @Composable
-private fun ThreadModelPicker(state: ChatUiState, onSelect: (String?) -> Unit) {
+private fun ThreadModelPicker(state: ChatUiState, onSelect: (String?) -> Unit, onOpen: () -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         Row(
-            modifier = Modifier.clickable { expanded = true },
+            modifier = Modifier.clickable {
+                expanded = true
+                onOpen()
+            },
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -523,7 +531,8 @@ private fun ThreadModelPicker(state: ChatUiState, onSelect: (String?) -> Unit) {
                     onSelect(model)
                     expanded = false
                 },
-                defaultLabel = "기본 모델 (${state.defaultModel.substringAfterLast('/')})"
+                defaultLabel = "기본 모델 (${state.defaultModel.substringAfterLast('/')})",
+                labelFor = { modelLabel(it, it, state.unavailableModels) }
             )
         }
     }

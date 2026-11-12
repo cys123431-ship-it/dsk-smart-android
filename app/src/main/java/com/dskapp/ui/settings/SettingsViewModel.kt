@@ -40,6 +40,8 @@ data class SettingsUiState(
     val model: String = OpenAiCompatibleClient.DEFAULT_MODEL,
     val hasStoredKey: Boolean = false,
     val availableModels: List<String> = OpenAiCompatibleClient.SUGGESTED_MODELS,
+    /** Listed by the server but failed to answer recently; the picker marks these. */
+    val unavailableModels: Set<String> = emptySet(),
     val isLoadingModels: Boolean = false,
     val isTesting: Boolean = false,
     val message: String? = null,
@@ -130,6 +132,7 @@ class SettingsViewModel(
         refreshErrorLog()
         verifyStoredKey()
         refreshNetwork()
+        refreshModelsQuietly()
         // Usage and stored settings change from other screens (chat writes tokens, the theme
         // can be toggled elsewhere); recombine so cost and appearance stay in sync without
         // the screen re-reading the repository on every recomposition.
@@ -138,6 +141,7 @@ class SettingsViewModel(
                 .collect { (settings, usage) ->
                     _uiState.update { current ->
                         current.copy(
+                            unavailableModels = settings.unavailableModels,
                             themeMode = settings.themeMode,
                             fontScale = settings.fontScale,
                             autoReadLinks = settings.autoReadLinks,
@@ -265,6 +269,27 @@ class SettingsViewModel(
         }
     }
 
+    /**
+     * Opening Settings re-reads the server's list when the saved one is a few minutes old,
+     * so a model the provider dropped or added shows up without pressing a button.
+     */
+    private fun refreshModelsQuietly() {
+        viewModelScope.launch {
+            val missing = runCatching {
+                com.dskapp.di.ServiceLocator.modelRefresher(appContext)
+                    .refreshIfStale(com.dskapp.data.ai.ModelRefresher.ON_PICKER_MAX_AGE_MS)
+            }.getOrNull()
+            _uiState.update { state ->
+                // Leave a list the user is looking at for another server alone.
+                if (!sameServer(state.baseUrl, repository.state.value.baseUrl)) return@update state
+                state.copy(
+                    availableModels = repository.state.value.knownModels,
+                    message = missing?.let { com.dskapp.data.ai.ModelRefresher.missingMessage(it) } ?: state.message
+                )
+            }
+        }
+    }
+
     /** Calls GET /models so the user can pick a model without leaving the app. */
     fun loadModels() {
         viewModelScope.launch {
@@ -272,23 +297,29 @@ class SettingsViewModel(
             val result = aiClient.listModels()
             _uiState.update { state ->
                 result.fold(
-                    onSuccess = { models ->
+                    onSuccess = { listing ->
+                        val current = state.model.trim()
+                        // Only chat models: embedding / rerank / OCR / speech models cannot
+                        // answer a chat and only made the list longer.
+                        val models = com.dskapp.data.ai.ModelRefresher.keep(listing, current)
                         // Remember the served list so the picker is populated offline too.
                         if (models.isNotEmpty()) {
-                            repository.saveKnownModels(models)
+                            repository.saveKnownModels(models, fetchedFrom = repository.state.value.baseUrl)
                         }
-                        val current = state.model.trim()
+                        val hidden = listing.all.size - models.size
+                        val counted = "채팅용 모델 ${models.size}개를 불러왔습니다" +
+                            (if (hidden > 0) " (임베딩·OCR 등 채팅용이 아닌 $hidden 개는 숨김)" else "")
                         state.copy(
                             isLoadingModels = false,
                             availableModels = if (models.isEmpty()) state.availableModels else models,
                             message = when {
-                                models.isEmpty() -> "서버가 모델 목록을 제공하지 않습니다."
+                                listing.all.isEmpty() -> "서버가 모델 목록을 제공하지 않습니다."
                                 // Providers drop models without notice; say so instead of a
                                 // cheerful count while the selected model no longer exists.
-                                current.isNotEmpty() && current !in models ->
-                                    "모델 ${models.size}개를 불러왔습니다. 지금 모델 '$current'은(는) 목록에 없습니다 - " +
+                                current.isNotEmpty() && current !in listing.all ->
+                                    "$counted. 지금 모델 '$current'은(는) 목록에 없습니다 - " +
                                         "다른 모델을 골라 저장해 주세요."
-                                else -> "모델 ${models.size}개를 불러왔습니다."
+                                else -> "$counted."
                             }
                         )
                     },

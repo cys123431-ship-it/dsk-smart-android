@@ -67,6 +67,7 @@ import com.dskapp.data.schedule.ScheduleCalc
 import com.dskapp.data.schedule.ScheduleNotifier
 import com.dskapp.data.schedule.ScheduledTask
 import com.dskapp.ui.components.ModelMenuItems
+import com.dskapp.ui.components.modelLabel
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -96,6 +97,7 @@ fun ScheduleScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
     val models by viewModel.knownModels.collectAsStateWithLifecycle()
+    val unavailableModels by viewModel.unavailableModels.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
 
     var editorTarget by remember { mutableStateOf<ScheduledTask?>(null) }
@@ -216,6 +218,7 @@ fun ScheduleScreen(
         TaskEditorDialog(
             initial = editorTarget,
             models = models,
+            unavailableModels = unavailableModels,
             defaultModel = viewModel.defaultModel,
             onDismiss = { editorVisible = false },
             onSave = { task ->
@@ -346,6 +349,7 @@ private fun TaskCard(
 private fun TaskEditorDialog(
     initial: ScheduledTask?,
     models: List<String>,
+    unavailableModels: Set<String>,
     defaultModel: String,
     onDismiss: () -> Unit,
     onSave: (ScheduledTask) -> Unit,
@@ -449,7 +453,9 @@ private fun TaskEditorDialog(
                             },
                             defaultLabel = "기본 모델 (" + defaultModel.substringAfterLast('/') + ")",
                             // The button shows the short name, so the menu does too.
-                            labelFor = { candidate -> candidate.substringAfterLast('/') },
+                            labelFor = { candidate ->
+                                modelLabel(candidate, candidate.substringAfterLast('/'), unavailableModels)
+                            },
                         )
                     }
                 }

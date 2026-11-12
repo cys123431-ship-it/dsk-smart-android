@@ -114,7 +114,8 @@ class ChatViewModel(
                     it.copy(
                         needsSetup = !settings.isConfigured,
                         defaultModel = settings.model,
-                        knownModels = settings.knownModels
+                        knownModels = settings.knownModels,
+                        unavailableModels = settings.unavailableModels
                     )
                 }
             }
@@ -378,6 +379,16 @@ class ChatViewModel(
         } else {
             error.userMessage
         }
+
+    /** The model menu opened: re-read the server's list if the saved one is a few minutes old. */
+    fun refreshModels() {
+        viewModelScope.launch {
+            runCatching {
+                ServiceLocator.modelRefresher(appContext)
+                    .refreshIfStale(com.dskapp.data.ai.ModelRefresher.ON_PICKER_MAX_AGE_MS)
+            }
+        }
+    }
 
     /** Throws away the last answer and asks again with the same history. */
     fun regenerate() {

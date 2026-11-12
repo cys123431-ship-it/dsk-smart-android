@@ -42,8 +42,11 @@ interface AiClient {
         onTruncated: () -> Unit = {}
     ): Flow<Unit>
 
-    /** Lists model IDs from GET /models; empty when the server does not support it. */
-    suspend fun listModels(): Result<List<String>>
+    /**
+     * Reads GET /models. [ModelListing.chat] leaves out embedding / rerank / OCR / speech
+     * models the provider lists alongside chat models; empty when the server has no list.
+     */
+    suspend fun listModels(): Result<ModelListing>
 
     /**
      * HTTP client used for one-off checks (the Settings "연결 테스트") so a test against

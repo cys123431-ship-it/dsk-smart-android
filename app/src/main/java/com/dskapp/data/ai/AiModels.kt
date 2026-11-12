@@ -69,7 +69,7 @@ sealed interface AiError {
      * The server does not serve this model (any more). Providers change their lists without
      * notice; the raw 404 used to put 100+ model names into one snackbar.
      */
-    data class ModelUnavailable(val model: String) : AiError
+    data class ModelUnavailable(val model: String, val serverSide: Boolean = false) : AiError
     data class Unexpected(val message: String) : AiError
 }
 
@@ -81,8 +81,13 @@ val AiError.userMessage: String
         is AiError.Network -> "서버에 연결할 수 없습니다. 주소와 네트워크를 확인해 주세요."
         // Long provider texts (stack traces, model lists) are cut so a snackbar stays readable.
         is AiError.Provider -> "AI 서버 오류($status): ${message.take(200)}"
-        is AiError.ModelUnavailable ->
+        is AiError.ModelUnavailable -> if (serverSide) {
+            // Listed by the provider but its backend is not running ("route unavailable").
+            "모델 '${model.ifBlank { "선택한 모델" }}'은(는) 제공업체 목록에는 있지만 지금 AI 서버에서 " +
+                "답을 만들 수 없는 상태입니다 (제공업체 쪽 문제). 다른 모델을 골라 주세요."
+        } else {
             "모델 '${model.ifBlank { "선택한 모델" }}'을(를) 이 AI 서버에서 쓸 수 없습니다 " +
                 "(제공업체 목록에서 빠졌을 수 있습니다). 설정 > 모델 목록을 눌러 다른 모델을 골라 주세요."
+        }
         is AiError.Unexpected -> "처리 중 문제가 발생했습니다: $message"
     }
