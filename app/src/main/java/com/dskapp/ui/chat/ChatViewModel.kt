@@ -10,6 +10,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.dskapp.agent.AgentBridge
 import com.dskapp.data.ai.AiClient
+import com.dskapp.data.ai.AiError
 import com.dskapp.data.ai.AiImage
 import com.dskapp.data.ai.AiMessage
 import com.dskapp.data.ai.AiResult
@@ -293,6 +294,8 @@ class ChatViewModel(
         viewModelScope.launch {
             val withLinks = attachments + readLinks(text)
             if (!persistUserTurn(text, withLinks)) {
+                // The pages read for this turn belong to nothing now.
+                AttachmentStore.deleteAll(withLinks.drop(attachments.size))
                 _uiState.update {
                     it.copy(input = text, pendingAttachments = attachments, banner = "이 대화가 삭제되어 보낼 수 없습니다.")
                 }
@@ -362,6 +365,19 @@ class ChatViewModel(
         _uiState.update { it.copy(isImporting = false) }
         return attachments
     }
+
+    /**
+     * The error text for the chat. When this thread has its own model and that model is the
+     * one the server no longer has, changing the default in Settings would not help - the
+     * thread keeps its override - so the user is told where to change it.
+     */
+    private fun bannerFor(error: AiError, threadModel: String?): String =
+        if (error is AiError.ModelUnavailable && !threadModel.isNullOrBlank()) {
+            "이 대화는 모델을 따로 '$threadModel'(으)로 정해 두었는데, 이 AI 서버에서 더 이상 쓸 수 없습니다. " +
+                "화면 위쪽의 모델 이름을 눌러 다른 모델이나 기본 모델로 바꿔 주세요."
+        } else {
+            error.userMessage
+        }
 
     /** Throws away the last answer and asks again with the same history. */
     fun regenerate() {
@@ -490,7 +506,7 @@ class ChatViewModel(
                     onError = { error ->
                         failed = true
                         ErrorLog.record("chat", "${error::class.simpleName}: ${error.userMessage}")
-                        _uiState.update { it.copy(banner = error.userMessage) }
+                        _uiState.update { it.copy(banner = bannerFor(error, model)) }
                     },
                     onUsage = { usage = usage?.plus(it) ?: it },
                     onTruncated = { truncated = true }

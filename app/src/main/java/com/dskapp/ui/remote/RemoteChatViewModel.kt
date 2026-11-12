@@ -433,7 +433,9 @@ class RemoteChatViewModel(
         loadSessionId: String?
     ): String {
         val typed = configured.trim()
-        if (typed.isNotEmpty() && RemoteCwd.isAbsolute(typed)) return typed
+        // A reopened session keeps its own folder, so the list is needed then even when
+        // Settings has a path.
+        if (loadSessionId == null && typed.isNotEmpty() && RemoteCwd.isAbsolute(typed)) return typed
         val sessions = if (canList) {
             try {
                 active.listSessions(null)

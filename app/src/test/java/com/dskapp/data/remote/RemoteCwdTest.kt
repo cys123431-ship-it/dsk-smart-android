@@ -62,6 +62,15 @@ class RemoteCwdTest {
     }
 
     @Test
+    fun reopeningPrefersTheSessionsFolderOverSettings() {
+        // A session started in another project must be reopened there, not in Settings' folder.
+        val sessions = listOf(summary("target", "C:\\projects\\other"))
+        assertEquals("C:\\projects\\other", RemoteCwd.resolve("C:\\mine", sessions, loadSessionId = "target"))
+        // A brand-new chat still uses the folder from Settings.
+        assertEquals("C:\\mine", RemoteCwd.resolve("C:\\mine", sessions))
+    }
+
+    @Test
     fun sessionsWithoutAbsoluteFoldersAreSkipped() {
         val sessions = listOf(summary("s1", ""), summary("s2", "~"), summary("s3", "/srv/goose"))
         assertEquals("/srv/goose", RemoteCwd.resolve("", sessions))

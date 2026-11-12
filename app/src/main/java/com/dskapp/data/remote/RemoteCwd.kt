@@ -8,8 +8,9 @@ package com.dskapp.data.remote
  * used to send "~" when the setting was blank, so every new remote chat failed even though
  * "연결 테스트" (which never opens a session) passed. The rules now:
  *
- *  1. a path the user typed in Settings wins, if it is absolute;
- *  2. reopening a session uses that session's own folder, as goose listed it;
+ *  1. reopening a session uses that session's own folder, as goose listed it - a session
+ *     started in another project must not be reopened in the folder from Settings;
+ *  2. otherwise a path the user typed in Settings, if it is absolute;
  *  3. otherwise the folder of the PC's most recent session - in practice the DSK Remote
  *     workspace, since that is where goose serve starts;
  *  4. nothing usable: null, and the caller asks the user to type a folder.
@@ -29,13 +30,13 @@ object RemoteCwd {
         sessions: List<AcpSessionSummary>,
         loadSessionId: String? = null
     ): String? {
-        val typed = configured.trim()
-        if (typed.isNotEmpty() && isAbsolute(typed)) return typed
         if (loadSessionId != null) {
             sessions.firstOrNull { it.sessionId == loadSessionId }?.cwd
                 ?.takeIf { isAbsolute(it) }
                 ?.let { return it }
         }
+        val typed = configured.trim()
+        if (typed.isNotEmpty() && isAbsolute(typed)) return typed
         // session/list comes back newest first.
         return sessions.firstOrNull { isAbsolute(it.cwd) }?.cwd
     }

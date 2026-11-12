@@ -91,6 +91,12 @@ object AgentBridge {
         if (keyguard.isKeyguardLocked) {
             return Result.failure(IllegalStateException("화면이 잠겨 있어 폰 조작 예약을 실행하지 못했습니다."))
         }
+        // One run controls the phone at a time: a scheduled run used to start on top of one the
+        // user had started from chat, and both then tapped and scrolled at once.
+        if (_running.value) {
+            return Result.failure(IllegalStateException("다른 폰 조작이 진행 중이라 이번 예약 실행은 건너뛰었습니다."))
+        }
+        _running.value = true
         val settings = ServiceLocator.settings(context).state.value
         val level = if (settings.agentLevel == AgentLevel.READ) AgentLevel.READ else AgentLevel.NAVIGATE
         return runCatching {
@@ -115,7 +121,7 @@ object AgentBridge {
                     svc.overlay.hide()
                 }
             }
-        }
+        }.also { _running.value = false }
     }
 
     /** Accessibility button (stage 1): summarise whatever is on screen, read-only. */

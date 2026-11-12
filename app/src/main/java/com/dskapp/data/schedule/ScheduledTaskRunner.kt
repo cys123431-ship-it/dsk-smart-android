@@ -2,6 +2,7 @@ package com.dskapp.data.schedule
 
 import android.content.Context
 import com.dskapp.agent.AgentBridge
+import com.dskapp.data.ai.AiError
 import com.dskapp.data.ai.AiMessage
 import com.dskapp.data.ai.AiResult
 import com.dskapp.data.ai.AiRole
@@ -105,7 +106,10 @@ object ScheduledTaskRunner {
             if (report.hits.isNotEmpty()) {
                 searchFiles += AttachmentStore.saveText(appContext, "🔍 ${queries.first()}".take(60), results)
             }
-            messages = messages + AiMessage(AiRole.ASSISTANT, result.text.trim()) + AiMessage(AiRole.USER, results)
+            // The model's own <think> block is not part of its answer; sending it back only
+            // costs tokens (the chat screen already strips it the same way).
+            val answerSoFar = ThinkTags.split(result.text).second.trim()
+            messages = messages + AiMessage(AiRole.ASSISTANT, answerSoFar) + AiMessage(AiRole.USER, results)
         }
         when (result) {
             is AiResult.Success -> {
@@ -128,13 +132,22 @@ object ScheduledTaskRunner {
                 chats.appendMessage(
                     conversationId = conversationId,
                     role = ChatViewModel.ROLE_ASSISTANT,
-                    content = "예약 실행 실패: ${result.error.userMessage}",
+                    content = "예약 실행 실패: ${failureText(result.error, task.model)}",
                     isError = true
                 )
-                error(result.error.userMessage)
+                error(failureText(result.error, task.model))
             }
         }
     }
+
+    /** A task with its own model keeps that model when the default changes: say where to fix it. */
+    private fun failureText(error: AiError, taskModel: String?): String =
+        if (error is AiError.ModelUnavailable && !taskModel.isNullOrBlank()) {
+            "${error.userMessage} 이 예약 작업은 모델을 따로 '$taskModel'(으)로 정해 두었으니, " +
+                "예약 작업 편집에서 모델을 바꿔 주세요."
+        } else {
+            error.userMessage
+        }
 
     private suspend fun readLinks(context: Context, prompt: String): List<Attachment> =
         UrlFinder.find(prompt, MAX_LINKS).mapNotNull { url ->

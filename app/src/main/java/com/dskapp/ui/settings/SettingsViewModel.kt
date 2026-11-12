@@ -195,6 +195,22 @@ class SettingsViewModel(
         _uiState.update { it.copy(model = value, isSaved = false) }
     }
 
+    /** The stored API key if [baseUrl] points at the server it was saved for, else null. */
+    private fun storedKeyFor(baseUrl: String): String? =
+        if (sameServer(baseUrl, repository.state.value.baseUrl)) {
+            repository.providerConfig().apiKey.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+
+    private fun sameServer(a: String, b: String): Boolean {
+        val hostA = hostOf(a) ?: return false
+        return hostA == hostOf(b)
+    }
+
+    private fun hostOf(url: String): String? =
+        runCatching { java.net.URI(url.trim()).host?.lowercase() }.getOrNull()
+
     fun consumeMessage() {
         _uiState.update { it.copy(message = null) }
     }
@@ -220,13 +236,32 @@ class SettingsViewModel(
             }
         }
 
-        // Keep the previously stored key when the field is left blank on edit.
-        val effectiveKey = apiKey.ifBlank {
-            repository.providerConfig().apiKey
+        // Keep the previously stored key when the field is left blank on edit - but only for
+        // the same server. The field says "저장됨 (바꿀 때만 입력)", so a user who points the app
+        // at another provider would otherwise send the old provider's key to the new one.
+        val effectiveKey = apiKey.ifBlank { storedKeyFor(baseUrl) }
+        if (effectiveKey.isNullOrBlank()) {
+            _uiState.update { it.copy(message = NEW_SERVER_NEEDS_KEY) }
+            return
         }
+        val serverChanged = !sameServer(baseUrl, repository.state.value.baseUrl)
         repository.saveConnection(baseUrl, effectiveKey, model)
+        if (serverChanged) {
+            // The old server's model list says nothing about the new one.
+            repository.saveKnownModels(listOf(model))
+        }
         _uiState.update {
-            it.copy(apiKey = "", hasStoredKey = true, isSaved = true, message = "저장했습니다.")
+            it.copy(
+                apiKey = "",
+                hasStoredKey = true,
+                isSaved = true,
+                availableModels = if (serverChanged) listOf(model) else it.availableModels,
+                message = if (serverChanged) {
+                    "저장했습니다. 다른 서버로 바꿨으니 모델 목록을 눌러 새 서버의 모델을 불러오세요."
+                } else {
+                    "저장했습니다."
+                }
+            )
         }
     }
 
@@ -242,13 +277,18 @@ class SettingsViewModel(
                         if (models.isNotEmpty()) {
                             repository.saveKnownModels(models)
                         }
+                        val current = state.model.trim()
                         state.copy(
                             isLoadingModels = false,
                             availableModels = if (models.isEmpty()) state.availableModels else models,
-                            message = if (models.isEmpty()) {
-                                "서버가 모델 목록을 제공하지 않습니다."
-                            } else {
-                                "모델 ${models.size}개를 불러왔습니다."
+                            message = when {
+                                models.isEmpty() -> "서버가 모델 목록을 제공하지 않습니다."
+                                // Providers drop models without notice; say so instead of a
+                                // cheerful count while the selected model no longer exists.
+                                current.isNotEmpty() && current !in models ->
+                                    "모델 ${models.size}개를 불러왔습니다. 지금 모델 '$current'은(는) 목록에 없습니다 - " +
+                                        "다른 모델을 골라 저장해 주세요."
+                                else -> "모델 ${models.size}개를 불러왔습니다."
                             }
                         )
                     },
@@ -282,9 +322,14 @@ class SettingsViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, message = "연결 테스트 중…") }
 
-            // Use what is typed on screen; an empty key field means "keep the stored key".
+            // Use what is typed on screen; an empty key field means "keep the stored key",
+            // which is only allowed for the server that key was saved for.
             val typedKey = state.apiKey.trim()
-            val effectiveKey = typedKey.ifBlank { repository.providerConfig().apiKey }
+            val effectiveKey = typedKey.ifBlank { storedKeyFor(state.baseUrl) }
+            if (effectiveKey.isNullOrBlank()) {
+                _uiState.update { it.copy(isTesting = false, message = NEW_SERVER_NEEDS_KEY) }
+                return@launch
+            }
             val testClient = OpenAiCompatibleClient(
                 client = aiClient.testHttpClient(),
                 configProvider = {
@@ -870,6 +915,10 @@ class SettingsViewModel(
     }
 
     companion object {
+        /** Shown instead of silently sending the old server's key to a new server. */
+        private const val NEW_SERVER_NEEDS_KEY =
+            "서버 주소를 다른 곳으로 바꿨습니다. 이전 서버의 API 키를 새 서버로 보내지 않도록, 새 서버의 API 키를 입력해 주세요."
+
         fun factory(
             context: Context,
             repository: SettingsRepository,

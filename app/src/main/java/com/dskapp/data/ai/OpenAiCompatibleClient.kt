@@ -359,11 +359,12 @@ class OpenAiCompatibleClient(
     )
 
     /** Maps an HTTP failure to a typed [AiError], preferring the provider's own message. */
-    private fun parseError(status: Int, payload: String): AiError {
+    internal fun parseError(status: Int, payload: String): AiError {
         val providerMessage = runCatching {
             val envelope = ChatJson.decodeFromString(ChatErrorEnvelope.serializer(), payload)
             envelope.error?.message ?: envelope.message
         }.getOrNull()
+        modelUnavailable(status, providerMessage ?: payload)?.let { return it }
 
         return when (status) {
             401, 403 -> AiError.Unauthorized(providerMessage ?: "인증 실패")
@@ -373,7 +374,27 @@ class OpenAiCompatibleClient(
         }
     }
 
+    /**
+     * "Model 'X' not found" style answers (400/404/422). Matched on the wording providers use
+     * instead of the status alone: a 404 can also mean a wrong base URL.
+     */
+    private fun modelUnavailable(status: Int, text: String): AiError.ModelUnavailable? {
+        if (status != 400 && status != 404 && status != 422) return null
+        val lower = text.lowercase()
+        val aboutModel = lower.contains("model")
+        val missing = MISSING_WORDS.any { lower.contains(it) }
+        if (!aboutModel || !missing) return null
+        val name = MODEL_NAME.find(text)?.groupValues?.get(1).orEmpty()
+        return AiError.ModelUnavailable(name)
+    }
+
     companion object {
+        private val MISSING_WORDS = listOf(
+            "not found", "does not exist", "not exist", "not available", "unavailable",
+            "model_not_found", "unknown model", "invalid model", "no such model", "not supported"
+        )
+        private val MODEL_NAME = Regex("""[Mm]odel\s*[:=]?\s*['"`]([^'"`]{1,200})['"`]""")
+
         /** River AI default; the user can change this in Settings. */
         const val DEFAULT_BASE_URL = "https://api.river.ai/v1"
         const val DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4.1-Flash"
