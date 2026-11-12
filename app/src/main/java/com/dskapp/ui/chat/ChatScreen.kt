@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -170,12 +171,16 @@ fun ChatScreen(
         }
     }
 
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let(viewModel::attachImage)
+    // Several photos / files in one go. The photo picker enforces the count itself; the file
+    // picker cannot, so the view model trims what does not fit and says so.
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(ChatViewModel.MAX_PENDING_ATTACHMENTS)
+    ) { uris ->
+        viewModel.attachImages(uris)
     }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::attachDocument)
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        viewModel.attachDocuments(uris)
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -214,7 +219,9 @@ fun ChatScreen(
             onOpenDrawer = onOpenDrawer,
             onNewChat = onNewChat,
             onAttachmentClick = { attachment -> openAttachment(context, attachment) },
-            onPickImage = { imagePicker.launch("image/*") },
+            onPickImage = {
+                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
             onPickFile = {
                 filePicker.launch(DOCUMENT_MIME_TYPES)
             },

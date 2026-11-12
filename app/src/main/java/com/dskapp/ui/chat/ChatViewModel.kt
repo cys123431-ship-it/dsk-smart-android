@@ -33,6 +33,7 @@ import com.dskapp.data.search.SearchProtocol
 import com.dskapp.data.search.WebSearchRunner
 import com.dskapp.data.settings.SettingsRepository
 import com.dskapp.di.ServiceLocator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -188,27 +189,62 @@ class ChatViewModel(
         }
     }
 
-    /** Text, Word, PowerPoint or PDF; PDFs without a text layer become page images. */
-    fun attachDocument(uri: Uri) {
+    /** Several photos picked at once; see [importBatch]. */
+    fun attachImages(uris: List<Uri>) = importBatch(uris, what = "사진") { uri ->
+        val bytes = ImageProcessor.toJpegBytes(appContext, uri).getOrThrow()
+        listOf(AttachmentStore.importImage(appContext, bytes))
+    }
+
+    /** Several documents picked at once; see [importBatch]. */
+    fun attachDocuments(uris: List<Uri>) = importBatch(uris, what = "파일") { uri ->
+        DocumentImporter.import(appContext, uri).getOrThrow()
+    }
+
+    /**
+     * Imports [uris] one after another in a single job.
+     *
+     * One job instead of one per item: separate jobs each switched "불러오는 중" off when they
+     * finished, so the indicator flickered and the send button came back while photos were
+     * still being processed. Items appear as soon as each is ready; failures are collected
+     * into one message instead of one snackbar per file. At most [MAX_PENDING_ATTACHMENTS]
+     * attachments wait for a message - every photo is uploaded with it, so a large pile makes
+     * the request slow and expensive.
+     */
+    private fun importBatch(uris: List<Uri>, what: String, import: suspend (Uri) -> List<Attachment>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
+            val room = (MAX_PENDING_ATTACHMENTS - _uiState.value.pendingAttachments.size).coerceAtLeast(0)
+            val accepted = uris.distinct().take(room)
+            val skipped = uris.distinct().size - accepted.size
             _uiState.update { it.copy(isImporting = true) }
-            val result = DocumentImporter.import(appContext, uri)
-            _uiState.update { state ->
-                result.fold(
-                    onSuccess = { attachments ->
-                        state.copy(
-                            isImporting = false,
-                            pendingAttachments = state.pendingAttachments + attachments
-                        )
-                    },
-                    onFailure = { error ->
-                        ErrorLog.record("attach", error.message ?: "파일을 읽지 못했습니다.", error)
-                        state.copy(
-                            isImporting = false,
-                            banner = error.message ?: "파일을 읽지 못했습니다."
-                        )
-                    }
-                )
+            val failures = mutableListOf<String>()
+            for (uri in accepted) {
+                try {
+                    val added = import(uri)
+                    _uiState.update { it.copy(pendingAttachments = it.pendingAttachments + added) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val name = AttachmentStore.displayName(appContext, uri) ?: what
+                    ErrorLog.record("attach", "$name: ${e.message}", e)
+                    failures += "$name (${e.message ?: "알 수 없는 오류"})"
+                }
+            }
+            val notes = buildList {
+                if (failures.isNotEmpty()) {
+                    add(
+                        if (accepted.size == 1) {
+                            "${what}을(를) 불러오지 못했습니다: ${failures.first()}"
+                        } else {
+                            "${accepted.size}개 중 ${failures.size}개를 불러오지 못했습니다: " +
+                                failures.take(3).joinToString(", ") + if (failures.size > 3) " 외" else ""
+                        }
+                    )
+                }
+                if (skipped > 0) add("첨부는 한 번에 ${MAX_PENDING_ATTACHMENTS}개까지라 ${skipped}개는 넣지 않았습니다.")
+            }
+            _uiState.update {
+                it.copy(isImporting = false, banner = notes.joinToString("\n").ifEmpty { it.banner })
             }
         }
     }
@@ -221,10 +257,11 @@ class ChatViewModel(
                 state.copy(input = joined)
             }
         }
-        uris.forEach { uri ->
-            val type = runCatching { appContext.contentResolver.getType(uri) }.getOrNull().orEmpty()
-            if (type.startsWith("image/")) attachImage(uri) else attachDocument(uri)
+        val (images, documents) = uris.partition { uri ->
+            runCatching { appContext.contentResolver.getType(uri) }.getOrNull().orEmpty().startsWith("image/")
         }
+        attachImages(images)
+        attachDocuments(documents)
     }
 
     fun removePendingAttachment(attachment: Attachment) {
@@ -760,6 +797,12 @@ class ChatViewModel(
 
         /** Messages kept verbatim after a fold, so the latest turns stay exact. */
         private const val KEEP_AFTER_SUMMARY = 10
+
+        /**
+         * Attachments that can wait for one message. Every photo is uploaded with the message,
+         * so this keeps a single request to a sensible size.
+         */
+        const val MAX_PENDING_ATTACHMENTS = 10
 
         /** Links read per message; more would mostly add tokens, not answers. */
         private const val MAX_LINKS = 3
